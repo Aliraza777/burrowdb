@@ -194,6 +194,9 @@ func ParseQueryJSON(data []byte) (Query, error) {
 	if err := dec.Decode(&raw); err != nil {
 		return Query{}, fmt.Errorf("query: %w", err)
 	}
+	if raw.Skip < 0 || raw.Limit < 0 {
+		return Query{}, errors.New("query: skip and limit can't be negative")
+	}
 	var q Query
 	q.Skip, q.Limit, q.Hint = raw.Skip, raw.Limit, raw.Hint
 	if len(raw.Filter) > 0 && string(raw.Filter) != "null" {

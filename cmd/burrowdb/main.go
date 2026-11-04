@@ -5,9 +5,15 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/Aliraza777/burrowdb/internal/btree"
@@ -15,14 +21,20 @@ import (
 	"github.com/Aliraza777/burrowdb/internal/kv"
 	"github.com/Aliraza777/burrowdb/internal/pager"
 	"github.com/Aliraza777/burrowdb/internal/query"
+	"github.com/Aliraza777/burrowdb/internal/server"
 )
 
-const version = "0.0.5"
+const version = "0.1.0"
 
 const usage = `burrowdb: a document database built from scratch
 
 usage:
   burrowdb version
+
+  HTTP server (phase 7):
+  burrowdb serve --data <file> [--addr 127.0.0.1:7070] [--token <secret>]
+      The token can also come from $BURROWDB_TOKEN. Clients send it as
+      "Authorization: Bearer <token>".
 
   Documents (phase 3):
   burrowdb doc <file> insert <collection> '<json>'   prints the new _id
@@ -75,6 +87,8 @@ func run(args []string) error {
 		return runDB(args[1:])
 	case "doc":
 		return runDoc(args[1:])
+	case "serve":
+		return runServe(args[1:])
 	default:
 		fmt.Print(usage)
 		return fmt.Errorf("unknown command %q", args[0])
@@ -431,4 +445,58 @@ func importJSONL(db *doc.DB, coll, path string) error {
 	}
 	fmt.Printf("imported %d documents into %s\n", total, coll)
 	return nil
+}
+
+func runServe(args []string) error {
+	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
+	data := fs.String("data", "", "database file (created if missing)")
+	addr := fs.String("addr", "127.0.0.1:7070", "address to listen on")
+	token := fs.String("token", os.Getenv("BURROWDB_TOKEN"), "require this bearer token")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *data == "" {
+		return fmt.Errorf("serve needs --data <file>")
+	}
+	db, err := doc.Open(*data)
+	if err != nil {
+		return err
+	}
+	srv := &http.Server{
+		Addr:              *addr,
+		Handler:           server.Handler(db, server.Options{Token: *token, Version: version}),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       2 * time.Minute,
+		WriteTimeout:      5 * time.Minute,
+		IdleTimeout:       2 * time.Minute,
+	}
+	ln, err := net.Listen("tcp", *addr)
+	if err != nil {
+		db.Close()
+		return err
+	}
+	auth := "no token: anyone who can reach this address has full access"
+	if *token != "" {
+		auth = "bearer token required"
+	}
+	fmt.Fprintf(os.Stderr, "burrowdb %s serving %s on http://%s (%s)\n", version, *data, ln.Addr(), auth)
+
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- srv.Serve(ln) }()
+	select {
+	case err := <-serveErr:
+		db.Close()
+		return err
+	case <-stop:
+	}
+	fmt.Fprintln(os.Stderr, "shutting down: finishing requests in flight")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	shutdownErr := srv.Shutdown(ctx)
+	if err := db.Close(); err != nil {
+		return err
+	}
+	return shutdownErr
 }

@@ -2,6 +2,7 @@ package query
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -12,6 +13,9 @@ import (
 
 // keyRange is a half-open range [lo, hi) of index value keys.
 type keyRange struct{ lo, hi []byte }
+
+// ErrBadHint means a hint named a field the query can't use an index on.
+var ErrBadHint = errors.New("query: bad hint")
 
 // candidate is one way to run a query with an index.
 type candidate struct {
@@ -197,7 +201,7 @@ func choose(r *doc.Reader, coll string, f *Filter, hint string, ex *Explain) (*c
 	}
 	if hint != "" {
 		if len(cands) == 0 {
-			return nil, fmt.Errorf("query: hint %q: no usable index on that field for this filter", hint)
+			return nil, fmt.Errorf("%w: %q has no usable index for this filter", ErrBadHint, hint)
 		}
 		return cands[0], nil
 	}
