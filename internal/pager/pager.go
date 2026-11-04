@@ -23,7 +23,7 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/Aliraza777/tinydoc/internal/btree"
+	"github.com/Aliraza777/burrowdb/internal/btree"
 )
 
 const pageSize = btree.PageSize
@@ -35,7 +35,7 @@ var ErrCorrupt = errors.New("pager: file is corrupt")
 var ErrClosed = errors.New("pager: database is closed")
 
 const (
-	magic       = "TDOCBT01"
+	magic       = "BURROW01"
 	metaSize    = 52
 	flHeader    = 12 // next (8) + count (4)
 	flPerPage   = (pageSize - flHeader) / 8

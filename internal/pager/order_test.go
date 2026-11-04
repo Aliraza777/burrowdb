@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Aliraza777/tinydoc/internal/btree"
+	"github.com/Aliraza777/burrowdb/internal/btree"
 )
 
 // recordingFile logs every write and sync, so a test can check that a commit

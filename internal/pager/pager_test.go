@@ -11,7 +11,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/Aliraza777/tinydoc/internal/btree"
+	"github.com/Aliraza777/burrowdb/internal/btree"
 )
 
 func openDB(t testing.TB, path string) *DB {

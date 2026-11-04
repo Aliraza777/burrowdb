@@ -1,4 +1,4 @@
-// Package kv is tinydoc's first storage engine: a key-value store on an
+// Package kv is burrowdb's first storage engine: a key-value store on an
 // append-only log, in the style of Bitcask.
 //
 // Every Set or Delete appends a checksummed record to one file. An in-memory

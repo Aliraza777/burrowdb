@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Aliraza777/tinydoc/internal/btree"
+	"github.com/Aliraza777/burrowdb/internal/btree"
 )
 
-const childEnv = "TINYDOC_PAGER_CRASH_CHILD"
+const childEnv = "BURROWDB_PAGER_CRASH_CHILD"
 
 func TestMain(m *testing.M) {
 	if path := os.Getenv(childEnv); path != "" {
@@ -81,7 +81,7 @@ func TestCrashRecovery(t *testing.T) {
 		t.Skip("crash test skipped in -short mode")
 	}
 	iters := 25
-	if v, err := strconv.Atoi(os.Getenv("TINYDOC_CRASH_ITERS")); err == nil {
+	if v, err := strconv.Atoi(os.Getenv("BURROWDB_CRASH_ITERS")); err == nil {
 		iters = v
 	}
 	path := filepath.Join(t.TempDir(), "db")

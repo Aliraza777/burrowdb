@@ -1,4 +1,4 @@
-# tinydoc
+# burrowdb
 
 A MongoDB-style document database, built from scratch in Go to learn how databases really work: storage on disk, crash recovery, B+trees, query engines and indexes. See [PLAN.md](PLAN.md) for the full roadmap.
 
@@ -19,11 +19,11 @@ A MongoDB-style document database, built from scratch in Go to learn how databas
 `internal/pager` stores the tree in one file. Two alternating meta pages hold the root, a transaction id and a checksum. A commit writes the new pages to places no committed tree uses, syncs, then writes the meta page and syncs again. Until the meta page lands, the old one still describes an untouched tree, so a crash at any point loses at most the commit in progress. Freed pages go on a free-list and are reused, so the file stops growing once it reaches its working size.
 
 ```sh
-./tinydoc db demo.db set apple red
-./tinydoc db demo.db set banana yellow
-./tinydoc db demo.db scan            # all keys, in order
-./tinydoc db demo.db scan a b        # keys in [a, b)
-./tinydoc db demo.db check           # verify structure and page accounting
+./burrowdb db demo.db set apple red
+./burrowdb db demo.db set banana yellow
+./burrowdb db demo.db scan            # all keys, in order
+./burrowdb db demo.db scan a b        # keys in [a, b)
+./burrowdb db demo.db check           # verify structure and page accounting
 ```
 
 ### How it's tested
@@ -58,15 +58,15 @@ An in-memory map points each key at its value's offset in the file, and it is re
 Try it:
 
 ```sh
-go build ./cmd/tinydoc
-./tinydoc kv demo.log set greeting hello
-./tinydoc kv demo.log get greeting
-./tinydoc kv demo.log stats
+go build ./cmd/burrowdb
+./burrowdb kv demo.log set greeting hello
+./burrowdb kv demo.log get greeting
+./burrowdb kv demo.log stats
 ```
 
 ### How it's tested
 
-- **Crash test:** the test re-runs itself as a writer process, kills it with `SIGKILL` at random moments, reopens the store and checks every acknowledged write. It passes 1,000 rounds in a row (`TINYDOC_CRASH_ITERS=1000 go test -run TestCrashRecovery ./internal/kv`).
+- **Crash test:** the test re-runs itself as a writer process, kills it with `SIGKILL` at random moments, reopens the store and checks every acknowledged write. It passes 1,000 rounds in a row (`BURROWDB_CRASH_ITERS=1000 go test -run TestCrashRecovery ./internal/kv`).
 - **Torn writes:** the file is cut at every byte inside the last record, and each time recovery must keep all earlier records and accept new writes.
 - **Corruption:** a flipped bit or trailing garbage is detected by the checksum and cut off.
 - **Concurrency:** readers, writers and compaction run in parallel under `go test -race`.

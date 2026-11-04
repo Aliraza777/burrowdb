@@ -1,4 +1,4 @@
-// Command tinydoc is the command-line entry point. It exposes the storage
+// Command burrowdb is the command-line entry point. It exposes the storage
 // engines built so far; later phases add `serve` and `shell`.
 package main
 
@@ -7,28 +7,28 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/Aliraza777/tinydoc/internal/btree"
-	"github.com/Aliraza777/tinydoc/internal/kv"
-	"github.com/Aliraza777/tinydoc/internal/pager"
+	"github.com/Aliraza777/burrowdb/internal/btree"
+	"github.com/Aliraza777/burrowdb/internal/kv"
+	"github.com/Aliraza777/burrowdb/internal/pager"
 )
 
 const version = "0.0.2"
 
-const usage = `tinydoc: a document database built from scratch
+const usage = `burrowdb: a document database built from scratch
 
 usage:
-  tinydoc version
+  burrowdb version
 
   B+tree storage engine (phase 2):
-  tinydoc db <file> set <key> <value>
-  tinydoc db <file> get <key>
-  tinydoc db <file> del <key>
-  tinydoc db <file> scan [from] [to]   keys in [from, to), in order
-  tinydoc db <file> stats
-  tinydoc db <file> check              verify the tree and page accounting
+  burrowdb db <file> set <key> <value>
+  burrowdb db <file> get <key>
+  burrowdb db <file> del <key>
+  burrowdb db <file> scan [from] [to]   keys in [from, to), in order
+  burrowdb db <file> stats
+  burrowdb db <file> check              verify the tree and page accounting
 
   Append-only log store (phase 1):
-  tinydoc kv <file> set|get|del|keys|stats|compact ...
+  burrowdb kv <file> set|get|del|keys|stats|compact ...
 `
 
 func main() {
@@ -59,7 +59,7 @@ func run(args []string) error {
 
 func runKV(args []string) error {
 	if len(args) < 2 {
-		return fmt.Errorf("usage: tinydoc kv <file> <set|get|del|keys|stats|compact> ...")
+		return fmt.Errorf("usage: burrowdb kv <file> <set|get|del|keys|stats|compact> ...")
 	}
 	s, err := kv.Open(args[0], kv.Options{})
 	if err != nil {
@@ -113,7 +113,7 @@ func runKV(args []string) error {
 
 func runDB(args []string) error {
 	if len(args) < 2 {
-		return fmt.Errorf("usage: tinydoc db <file> <set|get|del|scan|stats|check> ...")
+		return fmt.Errorf("usage: burrowdb db <file> <set|get|del|scan|stats|check> ...")
 	}
 	db, err := pager.Open(args[0])
 	if err != nil {

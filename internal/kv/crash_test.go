@@ -18,7 +18,7 @@ import (
 
 // When this variable is set, the test binary acts as the crash test's child:
 // it writes keys forever and prints each one only after Set has returned.
-const childEnv = "TINYDOC_CRASH_CHILD"
+const childEnv = "BURROWDB_CRASH_CHILD"
 
 func TestMain(m *testing.M) {
 	if path := os.Getenv(childEnv); path != "" {
@@ -59,13 +59,13 @@ func valueFor(i int) string { return strings.Repeat(strconv.Itoa(i), 1+i%7) }
 
 // Kill a writer process with SIGKILL at a random moment, again and again, and
 // check after each kill that every acknowledged write survived intact.
-// TINYDOC_CRASH_ITERS sets the number of rounds (default 25; use 1000 for a soak run).
+// BURROWDB_CRASH_ITERS sets the number of rounds (default 25; use 1000 for a soak run).
 func TestCrashRecovery(t *testing.T) {
 	if testing.Short() {
 		t.Skip("crash test skipped in -short mode")
 	}
 	iters := 25
-	if v, err := strconv.Atoi(os.Getenv("TINYDOC_CRASH_ITERS")); err == nil {
+	if v, err := strconv.Atoi(os.Getenv("BURROWDB_CRASH_ITERS")); err == nil {
 		iters = v
 	}
 	path := filepath.Join(t.TempDir(), "db.log")

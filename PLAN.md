@@ -1,4 +1,4 @@
-# tinydoc: a document database built from scratch in Go
+# burrowdb: a document database built from scratch in Go
 
 A small MongoDB-style database: JSON documents in collections, a query language, indexes, crash-safe storage, and a server you can talk to over HTTP. Built for learning and as a portfolio project, one working layer at a time.
 
@@ -7,7 +7,7 @@ A small MongoDB-style database: JSON documents in collections, a query language,
 By the end, this should work:
 
 ```sh
-tinydoc serve --data ./data
+burrowdb serve --data ./data
 curl -X POST localhost:7070/db/shop/users -d '{"name":"Ann","age":31}'
 curl -X POST localhost:7070/db/shop/users/find -d '{"filter":{"age":{"$gt":30}},"sort":{"age":-1}}'
 ```
@@ -84,10 +84,10 @@ Each phase ends with something you can demo and post about. Times assume part-ti
 - **Done when:** a crash at any point during a multi-document update leaves either all of it or none of it.
 
 ### Phase 7: Server, shell and TypeScript client (2 weeks)
-- HTTP/JSON server (`tinydoc serve`), an interactive shell (`tinydoc shell`), and graceful shutdown.
-- A TypeScript client published to npm (`tinydoc-client`), which plays to your existing strengths.
+- HTTP/JSON server (`burrowdb serve`), an interactive shell (`burrowdb shell`), and graceful shutdown.
+- A TypeScript client published to npm (`burrowdb-client`), which plays to your existing strengths.
 - Docker image.
-- **Done when:** a small demo app (e.g. a todo API in Node) runs on tinydoc.
+- **Done when:** a small demo app (e.g. a todo API in Node) runs on burrowdb.
 
 ### Phase 8: Polish and launch (1 week)
 - README with an architecture diagram and a "how it works" section per layer.
@@ -99,8 +99,8 @@ Each phase ends with something you can demo and post about. Times assume part-ti
 ## Folder layout
 
 ```
-tinydoc/
-  cmd/tinydoc/        CLI: serve, shell
+burrowdb/
+  cmd/burrowdb/        CLI: serve, shell
   internal/kv/        Phase 1 log-structured store
   internal/pager/     pages, free-list
   internal/btree/     B+tree
