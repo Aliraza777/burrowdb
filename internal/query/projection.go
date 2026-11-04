@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/Aliraza777/burrowdb/internal/value"
 )
 
 // Projection picks the fields a query returns. It either includes the listed
@@ -23,7 +25,7 @@ func ParseProjection(m map[string]any) (*Projection, error) {
 	}
 	p := &Projection{id: true}
 	mode := 0 // 1 include, -1 exclude
-	for _, path := range sortedKeys(m) {
+	for _, path := range value.SortedKeys(m) {
 		on, err := projectionFlag(path, m[path])
 		if err != nil {
 			return nil, err
@@ -43,7 +45,7 @@ func ParseProjection(m map[string]any) (*Projection, error) {
 			return nil, errors.New("query: a projection can't mix including and excluding fields (except _id)")
 		}
 		mode = want
-		p.paths = append(p.paths, splitPath(path))
+		p.paths = append(p.paths, value.SplitPath(path))
 	}
 	// Only {"_id": 0} or {"_id": 1}: exclude _id, or keep just _id.
 	p.include = mode == 1 || (mode == 0 && p.id)

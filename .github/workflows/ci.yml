@@ -27,4 +27,6 @@ jobs:
         run: go test -run '^$' -fuzz FuzzTree -fuzztime 60s ./internal/btree
       - name: fuzz the document decoder (30s)
         run: go test -run '^$' -fuzz FuzzDecode -fuzztime 30s ./internal/doc
+      - name: fuzz the index key encoding (30s)
+        run: go test -run '^$' -fuzz FuzzKeyOrder -fuzztime 30s ./internal/value
       - run: go build ./cmd/burrowdb

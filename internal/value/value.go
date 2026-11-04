@@ -1,6 +1,7 @@
-// Package query evaluates MongoDB-style queries over documents: filters
-// ($eq, $gt, $in, $and, ...), sort, skip, limit and projection.
-package query
+// Package value holds the rules for document values shared by the query
+// engine and indexes: dotted-path lookup, MongoDB's type order and
+// comparison, and an order-preserving byte encoding for index keys.
+package value
 
 import (
 	"slices"
@@ -8,10 +9,10 @@ import (
 	"strings"
 )
 
-// lookup returns every value at a dotted path. As in MongoDB, an array met
+// Lookup returns every value at a dotted path. As in MongoDB, an array met
 // along the way is searched element by element ("items.price" finds the price
 // of each item), and a numeric part can also index into it ("items.0.price").
-func lookup(v any, parts []string) []any {
+func Lookup(v any, parts []string) []any {
 	if len(parts) == 0 {
 		return []any{v}
 	}
@@ -21,15 +22,15 @@ func lookup(v any, parts []string) []any {
 		if !ok {
 			return nil
 		}
-		return lookup(child, parts[1:])
+		return Lookup(child, parts[1:])
 	case []any:
 		var out []any
 		if i, err := strconv.Atoi(parts[0]); err == nil && i >= 0 && i < len(x) {
-			out = append(out, lookup(x[i], parts[1:])...)
+			out = append(out, Lookup(x[i], parts[1:])...)
 		}
 		for _, el := range x {
 			if m, ok := el.(map[string]any); ok {
-				out = append(out, lookup(m, parts)...)
+				out = append(out, Lookup(m, parts)...)
 			}
 		}
 		return out
@@ -38,12 +39,12 @@ func lookup(v any, parts []string) []any {
 	}
 }
 
-func splitPath(path string) []string { return strings.Split(path, ".") }
+func SplitPath(path string) []string { return strings.Split(path, ".") }
 
-// matchCandidates is what a field condition is tested against: each value at
+// Candidates is what a field condition is tested against: each value at
 // the path, plus the elements of any array value, so {"tags": "a"} matches
 // tags: ["a", "b"] and {"tags": ["a", "b"]} matches the array itself.
-func matchCandidates(values []any) []any {
+func Candidates(values []any) []any {
 	out := slices.Clone(values)
 	for _, v := range values {
 		if arr, ok := v.([]any); ok {
@@ -96,9 +97,9 @@ func cmpOrdered[T int64 | float64 | string](a, b T) int {
 	return 0
 }
 
-// typeRank orders values of different types, following MongoDB's order for
+// TypeRank orders values of different types, following MongoDB's order for
 // the types documents can hold: null < numbers < strings < objects < arrays < booleans.
-func typeRank(v any) int {
+func TypeRank(v any) int {
 	switch v.(type) {
 	case nil:
 		return 0
@@ -116,9 +117,9 @@ func typeRank(v any) int {
 	return 6
 }
 
-// compareTotal orders any two values: by type rank, then by value.
-func compareTotal(a, b any) int {
-	ra, rb := typeRank(a), typeRank(b)
+// Compare orders any two values: by type rank, then by value.
+func Compare(a, b any) int {
+	ra, rb := TypeRank(a), TypeRank(b)
 	if ra != rb {
 		return cmpOrdered(int64(ra), int64(rb))
 	}
@@ -141,19 +142,19 @@ func compareTotal(a, b any) int {
 	case []any:
 		y := b.([]any)
 		for i := range min(len(x), len(y)) {
-			if c := compareTotal(x[i], y[i]); c != 0 {
+			if c := Compare(x[i], y[i]); c != 0 {
 				return c
 			}
 		}
 		return cmpOrdered(int64(len(x)), int64(len(y)))
 	case map[string]any:
 		y := b.(map[string]any)
-		xk, yk := sortedKeys(x), sortedKeys(y)
+		xk, yk := SortedKeys(x), SortedKeys(y)
 		for i := range min(len(xk), len(yk)) {
 			if c := cmpOrdered(xk[i], yk[i]); c != 0 {
 				return c
 			}
-			if c := compareTotal(x[xk[i]], y[yk[i]]); c != 0 {
+			if c := Compare(x[xk[i]], y[yk[i]]); c != 0 {
 				return c
 			}
 		}
@@ -162,7 +163,7 @@ func compareTotal(a, b any) int {
 	return 0
 }
 
-func sortedKeys(m map[string]any) []string {
+func SortedKeys(m map[string]any) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)
@@ -171,13 +172,13 @@ func sortedKeys(m map[string]any) []string {
 	return keys
 }
 
-func equal(a, b any) bool {
-	return typeRank(a) == typeRank(b) && compareTotal(a, b) == 0
+func Equal(a, b any) bool {
+	return TypeRank(a) == TypeRank(b) && Compare(a, b) == 0
 }
 
-// comparable reports whether a range operator can compare a and b: only
+// Comparable reports whether a range operator can compare a and b: only
 // within the same type (numbers count as one type), as in MongoDB.
-func comparable(a, b any) bool {
-	ra := typeRank(a)
-	return ra == typeRank(b) && ra != 3 && ra != 4
+func Comparable(a, b any) bool {
+	ra := TypeRank(a)
+	return ra == TypeRank(b) && ra != 3 && ra != 4
 }

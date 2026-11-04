@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Aliraza777/burrowdb/internal/doc"
+	"github.com/Aliraza777/burrowdb/internal/value"
 )
 
 // The dataset covers the cases MongoDB's rules are about: missing vs null,
@@ -63,84 +64,86 @@ func ids(docs []map[string]any) string {
 	return strings.Join(out, ",")
 }
 
+// filterCases are checked against the dataset, with and without indexes.
+var filterCases = []struct{ filter, want string }{
+	{`{}`, "a,b,c,d,e,f,g,h,i"},
+	{`{"name":"Ann"}`, "a"},
+	{`{"name":"ann"}`, "i"},
+	// 31 and 31.0 are equal, as in MongoDB.
+	{`{"age":31}`, "a,f"},
+	{`{"age":31.0}`, "a,f"},
+	{`{"age":{"$eq":"unknown"}}`, "d"},
+	// Range operators only compare within a type: the string and null ages never match.
+	{`{"age":{"$gt":30}}`, "a,c,f,g"},
+	{`{"age":{"$gte":31,"$lt":45}}`, "a,f"},
+	{`{"age":{"$lt":30}}`, "b,i"},
+	{`{"age":{"$gt":"a"}}`, "d"},
+	{`{"age":{"$gt":null}}`, ""},
+	// null matches both null and missing.
+	{`{"age":null}`, "e,h"},
+	{`{"age":{"$in":[null]}}`, "e,h"},
+	{`{"age":{"$exists":false}}`, "h"},
+	{`{"age":{"$exists":true}}`, "a,b,c,d,e,f,g,i"},
+	{`{"age":{"$ne":31}}`, "b,c,d,e,g,h,i"},
+	{`{"age":{"$in":[31,45]}}`, "a,c,f"},
+	{`{"age":{"$nin":[31,45]}}`, "b,d,e,g,h,i"},
+	// Arrays match on any element, or as a whole.
+	{`{"tags":"admin"}`, "a,g"},
+	{`{"tags":"solo"}`, "f"},
+	{`{"tags":["admin","dev"]}`, "a"},
+	{`{"tags":["dev","admin"]}`, ""},
+	{`{"tags":[]}`, "c"},
+	{`{"tags":{"$exists":true}}`, "a,b,c,f,g"},
+	{`{"tags":{"$ne":"admin"}}`, "b,c,d,e,f,h,i"},
+	{`{"tags":{"$in":["dev","solo"]}}`, "a,b,f"},
+	{`{"tags.0":"admin"}`, "a,g"},
+	{`{"tags.1":"dev"}`, "a"},
+	// Nested fields and whole-object equality.
+	{`{"address.city":"Lahore"}`, "a,c"},
+	{`{"address.city":{"$ne":"Lahore"}}`, "b,d,e,f,g,h,i"},
+	{`{"address.zip":{"$exists":true}}`, "a"},
+	{`{"address":null}`, "d,e,f,g,h,i"},
+	{`{"address":{"city":"Karachi"}}`, "b"},
+	{`{"address":{"city":"Lahore"}}`, "c"},
+	{`{"nested.a.b.c":1}`, "f"},
+	{`{"nested.a.b":{"c":1}}`, "f"},
+	{`{"missing.deep.path":null}`, "a,b,c,d,e,f,g,h,i"},
+	// Paths through arrays of objects.
+	{`{"items.sku":"x1"}`, "d,e"},
+	{`{"items.price":{"$gt":20}}`, "d"},
+	{`{"items.price":{"$lt":6}}`, "e"},
+	{`{"items.0.price":10}`, "d"},
+	{`{"items.1.sku":"y2"}`, "d"},
+	{`{"items.price":{"$gte":5,"$lte":10}}`, "d,e"},
+	// Without $elemMatch, each condition may be met by a different element:
+	// d has 25 (> 10) and 10 (< 20), so it matches, as in MongoDB.
+	{`{"items.price":{"$gt":10,"$lt":20}}`, "d"},
+	// Arrays of arrays.
+	{`{"matrix":[1,2]}`, "i"},
+	{`{"matrix":[[1,2],[3,4]]}`, "i"},
+	// Booleans and numbers.
+	{`{"active":true}`, "a,c,d"},
+	{`{"active":false}`, "b,i"},
+	{`{"active":{"$ne":true}}`, "b,e,f,g,h,i"},
+	{`{"score":7}`, "b,e"},
+	{`{"score":{"$gt":0}}`, "a,b,e"},
+	{`{"score":{"$lte":-1}}`, "g"},
+	// Strings compare byte-wise, so lowercase sorts after uppercase.
+	{`{"name":{"$gt":"D"}}`, "d,e,f,g,i"},
+	{`{"name":{"$gte":"Bob","$lt":"Eve"}}`, "b,c,d"},
+	// Logical operators.
+	{`{"$or":[{"name":"Ann"},{"age":{"$gt":60}}]}`, "a,g"},
+	{`{"$and":[{"active":true},{"address.city":"Lahore"}]}`, "a,c"},
+	{`{"$nor":[{"active":true},{"active":false}]}`, "e,f,g,h"},
+	{`{"active":true,"age":{"$gt":40}}`, "c"},
+	{`{"$or":[{"tags":"admin"},{"tags":"solo"}],"score":{"$exists":true}}`, "a,g"},
+	{`{"$or":[{"nobody":1}]}`, ""},
+	{`{"$and":[{"$or":[{"age":18},{"age":62}]},{"$nor":[{"name":"Gus"}]}]}`, "i"},
+}
+
 func TestFilters(t *testing.T) {
 	db := openWith(t, loadDocs(t))
-	cases := []struct{ filter, want string }{
-		{`{}`, "a,b,c,d,e,f,g,h,i"},
-		{`{"name":"Ann"}`, "a"},
-		{`{"name":"ann"}`, "i"},
-		// 31 and 31.0 are equal, as in MongoDB.
-		{`{"age":31}`, "a,f"},
-		{`{"age":31.0}`, "a,f"},
-		{`{"age":{"$eq":"unknown"}}`, "d"},
-		// Range operators only compare within a type: the string and null ages never match.
-		{`{"age":{"$gt":30}}`, "a,c,f,g"},
-		{`{"age":{"$gte":31,"$lt":45}}`, "a,f"},
-		{`{"age":{"$lt":30}}`, "b,i"},
-		{`{"age":{"$gt":"a"}}`, "d"},
-		{`{"age":{"$gt":null}}`, ""},
-		// null matches both null and missing.
-		{`{"age":null}`, "e,h"},
-		{`{"age":{"$in":[null]}}`, "e,h"},
-		{`{"age":{"$exists":false}}`, "h"},
-		{`{"age":{"$exists":true}}`, "a,b,c,d,e,f,g,i"},
-		{`{"age":{"$ne":31}}`, "b,c,d,e,g,h,i"},
-		{`{"age":{"$in":[31,45]}}`, "a,c,f"},
-		{`{"age":{"$nin":[31,45]}}`, "b,d,e,g,h,i"},
-		// Arrays match on any element, or as a whole.
-		{`{"tags":"admin"}`, "a,g"},
-		{`{"tags":"solo"}`, "f"},
-		{`{"tags":["admin","dev"]}`, "a"},
-		{`{"tags":["dev","admin"]}`, ""},
-		{`{"tags":[]}`, "c"},
-		{`{"tags":{"$exists":true}}`, "a,b,c,f,g"},
-		{`{"tags":{"$ne":"admin"}}`, "b,c,d,e,f,h,i"},
-		{`{"tags":{"$in":["dev","solo"]}}`, "a,b,f"},
-		{`{"tags.0":"admin"}`, "a,g"},
-		{`{"tags.1":"dev"}`, "a"},
-		// Nested fields and whole-object equality.
-		{`{"address.city":"Lahore"}`, "a,c"},
-		{`{"address.city":{"$ne":"Lahore"}}`, "b,d,e,f,g,h,i"},
-		{`{"address.zip":{"$exists":true}}`, "a"},
-		{`{"address":null}`, "d,e,f,g,h,i"},
-		{`{"address":{"city":"Karachi"}}`, "b"},
-		{`{"address":{"city":"Lahore"}}`, "c"},
-		{`{"nested.a.b.c":1}`, "f"},
-		{`{"nested.a.b":{"c":1}}`, "f"},
-		{`{"missing.deep.path":null}`, "a,b,c,d,e,f,g,h,i"},
-		// Paths through arrays of objects.
-		{`{"items.sku":"x1"}`, "d,e"},
-		{`{"items.price":{"$gt":20}}`, "d"},
-		{`{"items.price":{"$lt":6}}`, "e"},
-		{`{"items.0.price":10}`, "d"},
-		{`{"items.1.sku":"y2"}`, "d"},
-		{`{"items.price":{"$gte":5,"$lte":10}}`, "d,e"},
-		// Without $elemMatch, each condition may be met by a different element:
-		// d has 25 (> 10) and 10 (< 20), so it matches, as in MongoDB.
-		{`{"items.price":{"$gt":10,"$lt":20}}`, "d"},
-		// Arrays of arrays.
-		{`{"matrix":[1,2]}`, "i"},
-		{`{"matrix":[[1,2],[3,4]]}`, "i"},
-		// Booleans and numbers.
-		{`{"active":true}`, "a,c,d"},
-		{`{"active":false}`, "b,i"},
-		{`{"active":{"$ne":true}}`, "b,e,f,g,h,i"},
-		{`{"score":7}`, "b,e"},
-		{`{"score":{"$gt":0}}`, "a,b,e"},
-		{`{"score":{"$lte":-1}}`, "g"},
-		// Strings compare byte-wise, so lowercase sorts after uppercase.
-		{`{"name":{"$gt":"D"}}`, "d,e,f,g,i"},
-		{`{"name":{"$gte":"Bob","$lt":"Eve"}}`, "b,c,d"},
-		// Logical operators.
-		{`{"$or":[{"name":"Ann"},{"age":{"$gt":60}}]}`, "a,g"},
-		{`{"$and":[{"active":true},{"address.city":"Lahore"}]}`, "a,c"},
-		{`{"$nor":[{"active":true},{"active":false}]}`, "e,f,g,h"},
-		{`{"active":true,"age":{"$gt":40}}`, "c"},
-		{`{"$or":[{"tags":"admin"},{"tags":"solo"}],"score":{"$exists":true}}`, "a,g"},
-		{`{"$or":[{"nobody":1}]}`, ""},
-		{`{"$and":[{"$or":[{"age":18},{"age":62}]},{"$nor":[{"name":"Gus"}]}]}`, "i"},
-	}
-	for _, c := range cases {
+	for _, c := range filterCases {
 		q, err := ParseQueryJSON([]byte(`{"filter":` + c.filter + `}`))
 		if err != nil {
 			t.Errorf("%s: %v", c.filter, err)
@@ -260,7 +263,7 @@ func TestBadQueries(t *testing.T) {
 
 func TestNaN(t *testing.T) {
 	nan := math.NaN()
-	if !equal(nan, nan) || equal(nan, 1.0) || compareTotal(nan, math.Inf(-1)) >= 0 {
+	if !value.Equal(nan, nan) || value.Equal(nan, 1.0) || value.Compare(nan, math.Inf(-1)) >= 0 {
 		t.Fatal("NaN must equal only NaN and sort below every number")
 	}
 }
@@ -381,8 +384,8 @@ func TestFilterProperties(t *testing.T) {
 			check("$nor", nor.Match(d), !(fa.Match(d) || fb.Match(d)))
 			check("$exists false is the opposite of true", nex.Match(d), !ex.Match(d))
 			// For a single non-array value of the same type, $gt and $lte split it exactly.
-			vals := lookup(d, splitPath(field))
-			if len(vals) == 1 && comparable(vals[0], v) {
+			vals := value.Lookup(d, value.SplitPath(field))
+			if len(vals) == 1 && value.Comparable(vals[0], v) {
 				check("$gt and $lte are complements on one scalar", gt.Match(d), !lte.Match(d))
 			}
 		}
@@ -415,7 +418,7 @@ func TestFindProperties(t *testing.T) {
 			t.Fatal("sorting changed the result size")
 		}
 		for i := 1; i < len(sorted); i++ {
-			c := compareTotal(sortValue(sorted[i-1], sortBy[0]), sortValue(sorted[i], sortBy[0]))
+			c := value.Compare(sortValue(sorted[i-1], sortBy[0]), sortValue(sorted[i], sortBy[0]))
 			if sortBy[0].Desc {
 				c = -c
 			}
@@ -484,8 +487,16 @@ func TestMillionScan(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	start := time.Now()
+	for _, f := range []string{"n", "age"} {
+		if err := db.CreateIndex("users", f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Logf("built indexes on n and age in %v", time.Since(start).Round(time.Millisecond))
 	for _, qs := range []string{
 		`{"filter":{"n":123456}}`,
+		`{"filter":{"n":{"$gte":500000,"$lt":500100}}}`,
 		`{"filter":{"age":{"$gte":30,"$lt":32},"city":"Lahore"}}`,
 		`{"filter":{"age":42},"sort":{"n":-1},"limit":10}`,
 	} {
@@ -493,11 +504,23 @@ func TestMillionScan(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		start := time.Now()
-		got, err := Find(db, "users", q)
-		if err != nil {
-			t.Fatal(err)
+		var times [2]time.Duration
+		var results [2]string
+		for i, hint := range []string{"$natural", ""} {
+			q.Hint = hint
+			start := time.Now()
+			got, err := Find(db, "users", q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			times[i], results[i] = time.Since(start), ids(got)
 		}
-		t.Logf("%-62s %6d results in %v", qs, len(got), time.Since(start).Round(time.Millisecond))
+		if results[0] != results[1] {
+			t.Fatalf("%s: index and scan disagree", qs)
+		}
+		ex, _ := ExplainQuery(db, "users", q)
+		t.Logf("%-58s %5d results  scan %7v  %s %7v  (%.0fx)", qs, ex.Returned,
+			times[0].Round(time.Millisecond), ex.Plan, times[1].Round(10*time.Microsecond),
+			float64(times[0])/float64(times[1]))
 	}
 }

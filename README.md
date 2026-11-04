@@ -11,8 +11,41 @@ A MongoDB-style document database, built from scratch in Go to learn how databas
 | 2 | B+tree storage engine | ✅ |
 | 3 | Documents and collections | ✅ |
 | 4 | Query engine | ✅ |
-| 5 | Indexes and a query planner | next |
-| 6–8 | Transactions, server, client | planned |
+| 5 | Indexes and a query planner | ✅ |
+| 6 | Transactions and a write-ahead log | next |
+| 7–8 | Server, client, launch | planned |
+
+## Phase 5: indexes and a query planner
+
+```sh
+./burrowdb doc shop.db import users users.jsonl        # one JSON document per line
+./burrowdb doc shop.db index users age
+./burrowdb doc shop.db explain users '{"filter":{"age":{"$gte":30,"$lt":40}}}'
+./burrowdb doc shop.db check                           # pages and every index verified
+```
+
+An index is a range of keys in the same B+tree: `x/<collection>\0<field>\0<value><_id>`. Values use an **order-preserving byte encoding** (`internal/value`), so byte order equals MongoDB's value order and `age >= 30 and age < 40` is one range scan. Following MongoDB, arrays are indexed once per element (**multikey**) and a missing field is indexed as null. Indexes are updated in the same transaction as every insert, replace and delete.
+
+The **planner** turns each indexed field's conditions into key ranges (`$eq`, `$in`, `$gt/$gte/$lt/$lte`), counts the entries each candidate would read (stopping early), and picks the cheapest. An index that would read half the collection or more loses to a scan. On a multikey field it doesn't intersect two range conditions, because each can be met by a different array element. Every fetched document is re-checked against the full filter, so an index only has to narrow the search, never be exact. `explain` shows the plan, the bounds, the candidates and the work done; `hint` forces a plan (`"$natural"` for a scan, or a field name).
+
+**Tested with:**
+- all 61 hand-checked filters run through every plan: the planner's choice, a forced scan, and each usable index forced in turn;
+- 1,500 random filters (single conditions and pairs) where every usable index must agree with a scan;
+- `CheckIndexes`, which recomputes every index from the documents, after random inserts, replaces and deletes;
+- fuzzing that the key encoding's byte order matches comparison order (23M+ pairs).
+
+Six planted bugs are all caught: intersecting multikey ranges, an off-by-one bound, trusting the index without re-checking, not indexing missing fields as null, and stale entries on replace or delete.
+
+**1 million documents** (Apple M1 Pro; `BURROWDB_MILLION=1 go test -run TestMillionScan -v ./internal/query`):
+
+| Query | Scan | Index | |
+| --- | --- | --- | --- |
+| `n = 123456` (1 result) | 659 ms | 0.06 ms | ~12,000× |
+| `n` in [500000, 500100) (100 results) | 556 ms | 0.83 ms | ~670× |
+| `age` 30–31 and city Lahore (11,111 results) | 697 ms | 160 ms | 4× |
+| `age = 42`, sort by `n`, limit 10 | 724 ms | 188 ms | 4× |
+
+**Known limits:** the planner doesn't consider `limit`, so a common value with a small limit can be slower through an index than a scan that stops early. MongoDB races candidate plans for this. Sorting doesn't use indexes yet, `$or` doesn't combine indexes, and there are no compound or unique indexes.
 
 ## Phase 4: a MongoDB-style query engine
 
@@ -30,9 +63,7 @@ A MongoDB-style document database, built from scratch in Go to learn how databas
 
 **Tested with:** 61 hand-checked filters and 5 sort orders over a dataset built around the tricky cases, plus property checks over thousands of random documents and filters (`$ne` is the opposite of `$eq`, `$in` is an OR of equalities, `$or`/`$and`/`$nor` follow boolean logic, results are really sorted, skip/limit is a slice of the full result). Six planted semantics bugs are all caught; one of them exposed a missing test for sort stability, which was added.
 
-**Not yet supported:** `$elemMatch`, `$not`, `$regex`, `$size`, `$type`, and updates with operators like `$set`.
-
-Every query scans the whole collection for now. On 1 million documents that takes 0.6–0.7 s, whether 1 document matches or 11,000. That's what phase 5's indexes are for.
+**Not yet supported in queries:** `$elemMatch`, `$not`, `$regex`, `$size`, `$type`, and updates with operators like `$set`.
 
 ## Phase 3: documents and collections
 

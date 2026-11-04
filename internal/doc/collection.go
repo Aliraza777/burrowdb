@@ -160,12 +160,12 @@ func deleteDoc(t *btree.Tree, coll, id string) (bool, error) {
 }
 
 // prepare validates a document, assigns an _id if it has none, and encodes it.
-func (db *DB) prepare(coll string, d map[string]any) (string, []byte, error) {
+func (db *DB) prepare(coll string, d map[string]any) (string, map[string]any, []byte, error) {
 	if err := validCollection(coll); err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	if d == nil {
-		return "", nil, errors.New("doc: nil document")
+		return "", nil, nil, errors.New("doc: nil document")
 	}
 	out := make(map[string]any, len(d)+1)
 	for k, v := range d {
@@ -178,16 +178,16 @@ func (db *DB) prepare(coll string, d map[string]any) (string, []byte, error) {
 	}
 	s, ok := id.(string)
 	if !ok || validID(s) != nil {
-		return "", nil, ErrBadID
+		return "", nil, nil, ErrBadID
 	}
 	enc, err := Encode(out)
 	if err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	if len(enc) > MaxDocSize {
-		return "", nil, ErrTooLarge
+		return "", nil, nil, ErrTooLarge
 	}
-	return s, enc, nil
+	return s, out, enc, nil
 }
 
 // --- public API ---
@@ -205,19 +205,27 @@ func (db *DB) Insert(coll string, d map[string]any) (string, error) {
 // InsertMany adds documents in one transaction: all of them, or none.
 func (db *DB) InsertMany(coll string, docs []map[string]any) ([]string, error) {
 	ids := make([]string, len(docs))
+	full := make([]map[string]any, len(docs))
 	encs := make([][]byte, len(docs))
 	for i, d := range docs {
 		var err error
-		if ids[i], encs[i], err = db.prepare(coll, d); err != nil {
+		if ids[i], full[i], encs[i], err = db.prepare(coll, d); err != nil {
 			return nil, fmt.Errorf("document %d: %w", i, err)
 		}
 	}
 	err := db.p.Update(func(t *btree.Tree) error {
+		indexes, err := readIndexes(t, coll)
+		if err != nil {
+			return err
+		}
 		for i, id := range ids {
 			if _, _, exists := readDoc(t, coll, id); exists {
 				return fmt.Errorf("document %d (_id %q): %w", i, id, ErrDuplicateID)
 			}
 			if err := writeDoc(t, coll, id, encs[i], 0); err != nil {
+				return err
+			}
+			if err := indexDoc(t, coll, id, full[i], indexes, false); err != nil {
 				return err
 			}
 		}
@@ -231,22 +239,13 @@ func (db *DB) InsertMany(coll string, docs []map[string]any) ([]string, error) {
 
 // Get returns the document with the given _id.
 func (db *DB) Get(coll, id string) (map[string]any, error) {
-	if err := validCollection(coll); err != nil {
-		return nil, err
-	}
-	var enc []byte
-	var found bool
-	err := db.p.View(func(t *btree.Tree) error {
-		enc, _, found = readDoc(t, coll, id)
-		return nil
+	var d map[string]any
+	err := db.Read(func(r *Reader) error {
+		var err error
+		d, err = r.Get(coll, id)
+		return err
 	})
-	if err != nil {
-		return nil, err
-	}
-	if !found {
-		return nil, ErrNotFound
-	}
-	return Decode(enc)
+	return d, err
 }
 
 // Replace overwrites an existing document. If d has an _id it must match id.
@@ -259,16 +258,32 @@ func (db *DB) Replace(coll, id string, d map[string]any) error {
 		withID[k] = v
 	}
 	withID["_id"] = id
-	_, enc, err := db.prepare(coll, withID)
+	_, full, enc, err := db.prepare(coll, withID)
 	if err != nil {
 		return err
 	}
 	return db.p.Update(func(t *btree.Tree) error {
-		_, chunks, found := readDoc(t, coll, id)
+		oldEnc, chunks, found := readDoc(t, coll, id)
 		if !found {
 			return ErrNotFound
 		}
-		return writeDoc(t, coll, id, enc, chunks)
+		indexes, err := readIndexes(t, coll)
+		if err != nil {
+			return err
+		}
+		if len(indexes) > 0 {
+			old, err := Decode(oldEnc)
+			if err != nil {
+				return err
+			}
+			if err := indexDoc(t, coll, id, old, indexes, true); err != nil {
+				return err
+			}
+		}
+		if err := writeDoc(t, coll, id, enc, chunks); err != nil {
+			return err
+		}
+		return indexDoc(t, coll, id, full, indexes, false)
 	})
 }
 
@@ -279,8 +294,24 @@ func (db *DB) Delete(coll, id string) (bool, error) {
 	}
 	var deleted bool
 	err := db.p.Update(func(t *btree.Tree) error {
-		var err error
-		if deleted, err = deleteDoc(t, coll, id); err != nil || !deleted {
+		oldEnc, _, found := readDoc(t, coll, id)
+		if !found {
+			return nil
+		}
+		indexes, err := readIndexes(t, coll)
+		if err != nil {
+			return err
+		}
+		if len(indexes) > 0 {
+			old, err := Decode(oldEnc)
+			if err != nil {
+				return err
+			}
+			if err := indexDoc(t, coll, id, old, indexes, true); err != nil {
+				return err
+			}
+		}
+		if deleted, err = deleteDoc(t, coll, id); err != nil {
 			return err
 		}
 		return addCount(t, coll, -1)
@@ -290,37 +321,7 @@ func (db *DB) Delete(coll, id string) (bool, error) {
 
 // Scan calls fn for every document in _id order until fn returns false.
 func (db *DB) Scan(coll string, fn func(d map[string]any) bool) error {
-	if err := validCollection(coll); err != nil {
-		return err
-	}
-	prefix := docPrefix(coll)
-	return db.p.View(func(t *btree.Tree) error {
-		var cur []byte // id prefix of the document being assembled
-		var buf []byte
-		flush := func() (bool, error) {
-			if cur == nil {
-				return true, nil
-			}
-			d, err := Decode(buf)
-			if err != nil {
-				return false, err
-			}
-			return fn(d), nil
-		}
-		for it := t.Seek(prefix); it.Valid() && bytes.HasPrefix(it.Key(), prefix); it.Next() {
-			key := it.Key()
-			idEnd := len(key) - 2 // drop the chunk number; the byte before it is \x00
-			if cur == nil || !bytes.Equal(key[:idEnd], cur) {
-				if more, err := flush(); err != nil || !more {
-					return err
-				}
-				cur, buf = bytes.Clone(key[:idEnd]), nil
-			}
-			buf = append(buf, it.Value()...)
-		}
-		_, err := flush()
-		return err
-	})
+	return db.Read(func(r *Reader) error { return r.Scan(coll, fn) })
 }
 
 // Count returns the number of documents in a collection.
@@ -341,12 +342,19 @@ func (db *DB) Count(coll string) (int64, error) {
 func (db *DB) Collections() ([]string, error) {
 	var names []string
 	err := db.p.View(func(t *btree.Tree) error {
-		for it := t.Seek([]byte("c/")); it.Valid() && bytes.HasPrefix(it.Key(), []byte("c/")); it.Next() {
-			names = append(names, string(it.Key()[2:]))
-		}
-		return nil
+		var err error
+		names, err = collections(t)
+		return err
 	})
 	return names, err
+}
+
+func collections(t *btree.Tree) ([]string, error) {
+	var names []string
+	for it := t.Seek([]byte("c/")); it.Valid() && bytes.HasPrefix(it.Key(), []byte("c/")); it.Next() {
+		names = append(names, string(it.Key()[2:]))
+	}
+	return names, nil
 }
 
 // DropCollection deletes a collection and all its documents, and reports
@@ -358,14 +366,8 @@ func (db *DB) DropCollection(coll string) (bool, error) {
 	var existed bool
 	err := db.p.Update(func(t *btree.Tree) error {
 		_, existed, _ = readCount(t, coll)
-		// Collect first: deleting while iterating would invalidate the iterator.
-		var keys [][]byte
-		prefix := docPrefix(coll)
-		for it := t.Seek(prefix); it.Valid() && bytes.HasPrefix(it.Key(), prefix); it.Next() {
-			keys = append(keys, bytes.Clone(it.Key()))
-		}
-		for _, k := range keys {
-			if _, err := t.Delete(k); err != nil {
+		for _, prefix := range [][]byte{docPrefix(coll), entriesPrefix(coll), indexMetaPrefix(coll)} {
+			if err := deletePrefix(t, prefix); err != nil {
 				return err
 			}
 		}

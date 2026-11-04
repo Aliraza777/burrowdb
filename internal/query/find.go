@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/Aliraza777/burrowdb/internal/doc"
+	"github.com/Aliraza777/burrowdb/internal/value"
 )
 
 // SortField sorts by Path, ascending if Desc is false.
@@ -24,16 +25,19 @@ type Query struct {
 	Skip       int
 	Limit      int // 0 means no limit
 	Projection *Projection
+	// Hint forces a plan: "$natural" for a collection scan, or a field name
+	// to use that field's index. Empty lets the planner choose.
+	Hint string
 }
 
 // sortValue is the value a document sorts by for one field: missing counts as
 // null, and for an array the smallest element is used ascending, the largest
 // descending (an empty array counts as null).
 func sortValue(d map[string]any, f SortField) any {
-	values := lookup(d, splitPath(f.Path))
+	values := value.Lookup(d, value.SplitPath(f.Path))
 	var best any
 	found := false
-	for _, v := range matchCandidates(values) {
+	for _, v := range value.Candidates(values) {
 		if _, isArr := v.([]any); isArr {
 			continue
 		}
@@ -41,7 +45,7 @@ func sortValue(d map[string]any, f SortField) any {
 			best, found = v, true
 			continue
 		}
-		c := compareTotal(v, best)
+		c := value.Compare(v, best)
 		if (!f.Desc && c < 0) || (f.Desc && c > 0) {
 			best = v
 		}
@@ -56,7 +60,7 @@ func sortDocs(docs []map[string]any, fields []SortField) {
 	// Stable, so documents that tie keep _id order.
 	slices.SortStableFunc(docs, func(a, b map[string]any) int {
 		for _, f := range fields {
-			c := compareTotal(sortValue(a, f), sortValue(b, f))
+			c := value.Compare(sortValue(a, f), sortValue(b, f))
 			if f.Desc {
 				c = -c
 			}
@@ -68,25 +72,87 @@ func sortDocs(docs []map[string]any, fields []SortField) {
 	})
 }
 
-// Find runs a query over a collection by scanning it in _id order.
+// Find runs a query. It uses an index when one helps (see Explain).
 func Find(db *doc.DB, coll string, q Query) ([]map[string]any, error) {
+	out, _, err := run(db, coll, q)
+	return out, err
+}
+
+// ExplainQuery runs a query and reports the plan it used and the work done.
+func ExplainQuery(db *doc.DB, coll string, q Query) (Explain, error) {
+	_, ex, err := run(db, coll, q)
+	return ex, err
+}
+
+// Count returns how many documents in a collection match the filter.
+func Count(db *doc.DB, coll string, f *Filter) (int, error) {
+	out, _, err := run(db, coll, Query{Filter: f})
+	return len(out), err
+}
+
+func run(db *doc.DB, coll string, q Query) ([]map[string]any, Explain, error) {
+	var ex Explain
 	if q.Skip < 0 || q.Limit < 0 {
-		return nil, errors.New("query: skip and limit can't be negative")
+		return nil, ex, errors.New("query: skip and limit can't be negative")
 	}
-	// Without a sort, the scan can stop as soon as skip+limit documents matched.
+	// Without a sort, results come in _id order, so reading can stop as soon
+	// as skip+limit documents matched.
 	stopAt := -1
 	if len(q.Sort) == 0 && q.Limit > 0 {
 		stopAt = q.Skip + q.Limit
 	}
 	var out []map[string]any
-	err := db.Scan(coll, func(d map[string]any) bool {
-		if q.Filter.Match(d) {
-			out = append(out, d)
+	err := db.Read(func(r *doc.Reader) error {
+		plan, err := choose(r, coll, q.Filter, q.Hint, &ex)
+		if err != nil {
+			return err
 		}
-		return stopAt < 0 || len(out) < stopAt
+		if plan == nil {
+			ex.Plan = "COLLSCAN"
+			return r.Scan(coll, func(d map[string]any) bool {
+				ex.DocsExamined++
+				if q.Filter.Match(d) {
+					out = append(out, d)
+				}
+				return stopAt < 0 || len(out) < stopAt
+			})
+		}
+		ex.Plan, ex.Index, ex.Bounds = "IXSCAN", plan.field, plan.bounds
+		// Collect the matching _ids (a multikey index can repeat one), then
+		// fetch in _id order so results come out as a scan would return them.
+		seen := map[string]bool{}
+		var ids []string
+		for _, kr := range plan.ranges {
+			err := r.ScanIndex(coll, plan.field, kr.lo, kr.hi, func(id string) bool {
+				ex.KeysExamined++
+				if !seen[id] {
+					seen[id] = true
+					ids = append(ids, id)
+				}
+				return true
+			})
+			if err != nil {
+				return err
+			}
+		}
+		slices.Sort(ids)
+		for _, id := range ids {
+			if stopAt >= 0 && len(out) >= stopAt {
+				break
+			}
+			d, err := r.Get(coll, id)
+			if err != nil {
+				return fmt.Errorf("query: index %s points at %s: %w", plan.field, id, err)
+			}
+			ex.DocsExamined++
+			if q.Filter.Match(d) { // the index narrows; the filter decides
+				out = append(out, d)
+			}
+		}
+		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, ex, err
 	}
 	sortDocs(out, q.Sort)
 	out = out[min(q.Skip, len(out)):]
@@ -98,19 +164,8 @@ func Find(db *doc.DB, coll string, q Query) ([]map[string]any, error) {
 			out[i] = q.Projection.Apply(d)
 		}
 	}
-	return out, nil
-}
-
-// Count returns how many documents in a collection match the filter.
-func Count(db *doc.DB, coll string, f *Filter) (int, error) {
-	n := 0
-	err := db.Scan(coll, func(d map[string]any) bool {
-		if f.Match(d) {
-			n++
-		}
-		return true
-	})
-	return n, err
+	ex.Returned = len(out)
+	return out, ex, nil
 }
 
 // ParseQueryJSON reads a query of the form
@@ -125,6 +180,7 @@ func ParseQueryJSON(data []byte) (Query, error) {
 		Skip       int             `json:"skip"`
 		Limit      int             `json:"limit"`
 		Projection json.RawMessage `json:"projection"`
+		Hint       string          `json:"hint"`
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
@@ -132,7 +188,7 @@ func ParseQueryJSON(data []byte) (Query, error) {
 		return Query{}, fmt.Errorf("query: %w", err)
 	}
 	var q Query
-	q.Skip, q.Limit = raw.Skip, raw.Limit
+	q.Skip, q.Limit, q.Hint = raw.Skip, raw.Limit, raw.Hint
 	if len(raw.Filter) > 0 && string(raw.Filter) != "null" {
 		m, err := doc.FromJSON(raw.Filter)
 		if err != nil {

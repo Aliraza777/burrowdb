@@ -3,9 +3,12 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/Aliraza777/burrowdb/internal/btree"
 	"github.com/Aliraza777/burrowdb/internal/doc"
@@ -14,7 +17,7 @@ import (
 	"github.com/Aliraza777/burrowdb/internal/query"
 )
 
-const version = "0.0.4"
+const version = "0.0.5"
 
 const usage = `burrowdb: a document database built from scratch
 
@@ -30,6 +33,12 @@ usage:
   burrowdb doc <file> query <collection> '<query>'    e.g. '{"filter":{"age":{"$gt":30}},"sort":{"age":-1},"limit":10}'
   burrowdb doc <file> count <collection> ['<filter>']
   burrowdb doc <file> collections
+  burrowdb doc <file> import <collection> <file.jsonl>   one JSON document per line
+  burrowdb doc <file> index <collection> <field>     create an index (dotted paths work)
+  burrowdb doc <file> dropindex <collection> <field>
+  burrowdb doc <file> indexes <collection>
+  burrowdb doc <file> explain <collection> '<query>' show the plan and the work it did
+  burrowdb doc <file> check                          verify pages and every index
   burrowdb doc <file> drop <collection>
 
   B+tree storage engine (phase 2):
@@ -213,7 +222,8 @@ func runDoc(args []string) error {
 	need := map[string][2]int{ // min, max arguments
 		"insert": {2, 2}, "get": {2, 2}, "replace": {3, 3}, "delete": {2, 2},
 		"find": {1, 2}, "count": {1, 2}, "collections": {0, 0}, "drop": {1, 1},
-		"query": {2, 2},
+		"query": {2, 2}, "index": {2, 2}, "dropindex": {2, 2}, "indexes": {1, 1},
+		"explain": {2, 2}, "check": {0, 0}, "import": {2, 2},
 	}
 	n, ok := need[op]
 	if !ok {
@@ -294,6 +304,47 @@ func runDoc(args []string) error {
 				return err
 			}
 		}
+	case "import":
+		return importJSONL(db, rest[0], rest[1])
+	case "index":
+		return db.CreateIndex(rest[0], rest[1])
+	case "dropindex":
+		return db.DropIndex(rest[0], rest[1])
+	case "indexes":
+		idx, err := db.Indexes(rest[0])
+		if err != nil {
+			return err
+		}
+		for _, i := range idx {
+			kind := ""
+			if i.Multikey {
+				kind = " (multikey)"
+			}
+			fmt.Println(i.Field + kind)
+		}
+	case "explain":
+		q, err := query.ParseQueryJSON([]byte(rest[1]))
+		if err != nil {
+			return err
+		}
+		start := time.Now()
+		ex, err := query.ExplainQuery(db, rest[0], q)
+		if err != nil {
+			return err
+		}
+		out, _ := json.MarshalIndent(struct {
+			query.Explain
+			Millis float64 `json:"millis"`
+		}{ex, float64(time.Since(start).Microseconds()) / 1000}, "", "  ")
+		fmt.Println(string(out))
+	case "check":
+		if err := db.Pager().Check(); err != nil {
+			return err
+		}
+		if err := db.CheckIndexes(); err != nil {
+			return err
+		}
+		fmt.Println("ok: pages accounted for, every index matches its documents")
 	case "count":
 		if len(rest) == 2 {
 			m, err := doc.FromJSON([]byte(rest[1]))
@@ -331,5 +382,53 @@ func runDoc(args []string) error {
 		}
 		return err
 	}
+	return nil
+}
+
+// importJSONL inserts one JSON document per line, in batches of 1,000.
+func importJSONL(db *doc.DB, coll, path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 1<<20), doc.MaxDocSize+1<<20)
+	var batch []map[string]any
+	total, line := 0, 0
+	flush := func() error {
+		if len(batch) == 0 {
+			return nil
+		}
+		if _, err := db.InsertMany(coll, batch); err != nil {
+			return fmt.Errorf("batch ending at line %d: %w", line, err)
+		}
+		total += len(batch)
+		batch = batch[:0]
+		return nil
+	}
+	for sc.Scan() {
+		line++
+		if len(bytes.TrimSpace(sc.Bytes())) == 0 {
+			continue
+		}
+		d, err := doc.FromJSON(sc.Bytes())
+		if err != nil {
+			return fmt.Errorf("line %d: %w", line, err)
+		}
+		batch = append(batch, d)
+		if len(batch) == 1000 {
+			if err := flush(); err != nil {
+				return err
+			}
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return err
+	}
+	if err := flush(); err != nil {
+		return err
+	}
+	fmt.Printf("imported %d documents into %s\n", total, coll)
 	return nil
 }

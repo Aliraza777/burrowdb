@@ -3,6 +3,8 @@ package query
 import (
 	"fmt"
 	"strings"
+
+	"github.com/Aliraza777/burrowdb/internal/value"
 )
 
 // Filter is a parsed MongoDB-style filter.
@@ -48,8 +50,8 @@ type fieldOp struct {
 }
 
 func (f fieldNode) match(d map[string]any) bool {
-	values := lookup(d, f.path)
-	cands := matchCandidates(values)
+	values := value.Lookup(d, f.path)
+	cands := value.Candidates(values)
 	for _, op := range f.ops {
 		if !op.holds(values, cands) {
 			return false
@@ -64,7 +66,7 @@ func eqAny(values, cands []any, v any) bool {
 		return true
 	}
 	for _, c := range cands {
-		if equal(c, v) {
+		if value.Equal(c, v) {
 			return true
 		}
 	}
@@ -91,10 +93,10 @@ func (op fieldOp) holds(values, cands []any) bool {
 	}
 	// Range operators: any candidate of the same type in range.
 	for _, c := range cands {
-		if !comparable(c, op.val) {
+		if !value.Comparable(c, op.val) {
 			continue
 		}
-		cmp := compareTotal(c, op.val)
+		cmp := value.Compare(c, op.val)
 		switch op.name {
 		case "$gt":
 			if cmp > 0 {
@@ -139,7 +141,7 @@ func parseAnd(m map[string]any, depth int) (node, error) {
 		return nil, fmt.Errorf("query: filter nested deeper than %d levels", maxFilterDepth)
 	}
 	var parts andNode
-	for _, k := range sortedKeys(m) { // deterministic order, for error messages
+	for _, k := range value.SortedKeys(m) { // deterministic order, for error messages
 		v := m[k]
 		switch {
 		case k == "$and" || k == "$or" || k == "$nor":
@@ -177,7 +179,7 @@ func parseAnd(m map[string]any, depth int) (node, error) {
 			if err != nil {
 				return nil, err
 			}
-			parts = append(parts, fieldNode{path: splitPath(k), ops: ops})
+			parts = append(parts, fieldNode{path: value.SplitPath(k), ops: ops})
 		}
 	}
 	return parts, nil
@@ -203,7 +205,7 @@ func parseField(path string, v any) ([]fieldOp, error) {
 		return nil, fmt.Errorf("query: %s mixes operators and plain fields", path)
 	}
 	var ops []fieldOp
-	for _, name := range sortedKeys(obj) {
+	for _, name := range value.SortedKeys(obj) {
 		arg := obj[name]
 		switch name {
 		case "$eq", "$ne", "$gt", "$gte", "$lt", "$lte":
