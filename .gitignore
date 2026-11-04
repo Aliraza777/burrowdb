@@ -1,0 +1,5 @@
+/tinydoc
+*.log
+*.compact
+/data
+.DS_Store
