@@ -21,6 +21,8 @@ jobs:
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
       - run: go vet ./...
       - run: go test -race ./...
-      - name: crash soak (200 rounds)
-        run: TINYDOC_CRASH_ITERS=200 go test -run TestCrashRecovery -count=1 ./internal/kv
+      - name: crash soak (200 rounds per engine)
+        run: TINYDOC_CRASH_ITERS=200 go test -run TestCrashRecovery -count=1 ./internal/kv ./internal/pager
+      - name: fuzz the B+tree (60s)
+        run: go test -run '^$' -fuzz FuzzTree -fuzztime 60s ./internal/btree
       - run: go build ./cmd/tinydoc

@@ -1,26 +1,34 @@
-// Command tinydoc is the command-line entry point. For now it exposes the
-// phase 1 key-value store; later phases add `serve` and `shell`.
+// Command tinydoc is the command-line entry point. It exposes the storage
+// engines built so far; later phases add `serve` and `shell`.
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 
+	"github.com/Aliraza777/tinydoc/internal/btree"
 	"github.com/Aliraza777/tinydoc/internal/kv"
+	"github.com/Aliraza777/tinydoc/internal/pager"
 )
 
-const version = "0.0.1"
+const version = "0.0.2"
 
 const usage = `tinydoc: a document database built from scratch
 
 usage:
   tinydoc version
-  tinydoc kv <file> set <key> <value>
-  tinydoc kv <file> get <key>
-  tinydoc kv <file> del <key>
-  tinydoc kv <file> keys
-  tinydoc kv <file> stats
-  tinydoc kv <file> compact
+
+  B+tree storage engine (phase 2):
+  tinydoc db <file> set <key> <value>
+  tinydoc db <file> get <key>
+  tinydoc db <file> del <key>
+  tinydoc db <file> scan [from] [to]   keys in [from, to), in order
+  tinydoc db <file> stats
+  tinydoc db <file> check              verify the tree and page accounting
+
+  Append-only log store (phase 1):
+  tinydoc kv <file> set|get|del|keys|stats|compact ...
 `
 
 func main() {
@@ -41,6 +49,8 @@ func run(args []string) error {
 		return nil
 	case "kv":
 		return runKV(args[1:])
+	case "db":
+		return runDB(args[1:])
 	default:
 		fmt.Print(usage)
 		return fmt.Errorf("unknown command %q", args[0])
@@ -97,6 +107,79 @@ func runKV(args []string) error {
 			return err
 		}
 		fmt.Printf("compacted: %d -> %d bytes\n", before, s.Stats().FileSize)
+	}
+	return nil
+}
+
+func runDB(args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("usage: tinydoc db <file> <set|get|del|scan|stats|check> ...")
+	}
+	db, err := pager.Open(args[0])
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	op, rest := args[1], args[2:]
+	switch op {
+	case "set":
+		if len(rest) != 2 {
+			return fmt.Errorf("set takes <key> <value>")
+		}
+		return db.Set([]byte(rest[0]), []byte(rest[1]))
+	case "get":
+		if len(rest) != 1 {
+			return fmt.Errorf("get takes <key>")
+		}
+		v, found, err := db.Get([]byte(rest[0]))
+		if err != nil {
+			return err
+		}
+		if !found {
+			return fmt.Errorf("key %q not found", rest[0])
+		}
+		fmt.Println(string(v))
+	case "del":
+		if len(rest) != 1 {
+			return fmt.Errorf("del takes <key>")
+		}
+		existed, err := db.Delete([]byte(rest[0]))
+		if err == nil && !existed {
+			fmt.Fprintf(os.Stderr, "key %q did not exist\n", rest[0])
+		}
+		return err
+	case "scan":
+		if len(rest) > 2 {
+			return fmt.Errorf("scan takes [from] [to]")
+		}
+		var from, to []byte
+		if len(rest) > 0 {
+			from = []byte(rest[0])
+		}
+		if len(rest) > 1 {
+			to = []byte(rest[1])
+		}
+		return db.View(func(t *btree.Tree) error {
+			for it := t.Seek(from); it.Valid(); it.Next() {
+				if to != nil && bytes.Compare(it.Key(), to) >= 0 {
+					break
+				}
+				fmt.Printf("%s = %s\n", it.Key(), it.Value())
+			}
+			return nil
+		})
+	case "stats":
+		st := db.Stats()
+		fmt.Printf("commits: %d\npages: %d (%d bytes)\nfree pages: %d\n",
+			st.TxID, st.Pages, st.Pages*btree.PageSize, st.FreePages)
+	case "check":
+		if err := db.Check(); err != nil {
+			return err
+		}
+		fmt.Println("ok: tree structure valid, every page accounted for")
+	default:
+		return fmt.Errorf("unknown db command %q", op)
 	}
 	return nil
 }
