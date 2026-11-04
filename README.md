@@ -13,8 +13,27 @@ A MongoDB-style document database, built from scratch in Go to learn how databas
 | 4 | Query engine | ✅ |
 | 5 | Indexes and a query planner | ✅ |
 | 6 | Transactions and group commit | ✅ |
-| 7 | HTTP server and TypeScript client | next |
-| 8 | Benchmarks and launch | planned |
+| 7 | HTTP server and TypeScript client | ✅ |
+| 8 | Benchmarks and launch | next |
+
+## Phase 7: an HTTP server and a TypeScript client
+
+```sh
+burrowdb serve --data app.db --addr 127.0.0.1:7070 --token "$BURROWDB_TOKEN"
+```
+
+```ts
+import { BurrowDB } from "burrowdb-client";
+
+const db = new BurrowDB({ url: "http://127.0.0.1:7070", token: process.env.BURROWDB_TOKEN });
+const users = db.collection<User>("users");
+await users.insertOne({ name: "Ann", age: 31 });
+await users.find({ age: { $gte: 18 } }, { sort: { age: -1 }, limit: 10 });
+```
+
+**The server** (`internal/server`, standard library only) serves a JSON API for documents, find/count/explain, indexes, collections, and `POST /transaction` (a list of inserts, replaces and deletes applied all or nothing). Errors carry a stable code and a matching status: 404, 409, 400, 413 or 401. It listens on `127.0.0.1` by default, can require a bearer token (compared in constant time), limits request size and time, and on Ctrl-C finishes requests in flight before closing the database.
+
+**The client** ([`clients/ts`](clients/ts), npm package `burrowdb-client`) has typed filters (`{ age: { $gt: "x" } }` is a compile error when `age` is a number), typed errors with the server's code, and transactions, with no dependencies. Its tests build the real Go server, start it, and run over HTTP; compile-time tests check that wrong filter types are rejected.
 
 ## Phase 6: transactions and group commit
 

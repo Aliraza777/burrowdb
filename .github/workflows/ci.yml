@@ -30,3 +30,25 @@ jobs:
       - name: fuzz the index key encoding (30s)
         run: go test -run '^$' -fuzz FuzzKeyOrder -fuzztime 30s ./internal/value
       - run: go build ./cmd/burrowdb
+
+  ts-client:
+    name: TypeScript client (against a real server)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clients/ts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: clients/ts/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build

@@ -1,0 +1,53 @@
+{
+  "name": "burrowdb-client",
+  "version": "0.1.0",
+  "description": "TypeScript client for burrowdb, a MongoDB-style document database built from scratch in Go: typed filters, queries, indexes and transactions over HTTP.",
+  "homepage": "https://github.com/Aliraza777/burrowdb/tree/main/clients/ts#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Aliraza777/burrowdb.git",
+    "directory": "clients/ts"
+  },
+  "bugs": {
+    "url": "https://github.com/Aliraza777/burrowdb/issues"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "burrowdb",
+    "database",
+    "document-database",
+    "mongodb",
+    "client",
+    "typescript"
+  ],
+  "author": "aliwahlah <aliwahlah777@gmail.com>",
+  "license": "MIT",
+  "devDependencies": {
+    "@biomejs/biome": "2.5.15",
+    "@types/node": "25.9.9",
+    "tsup": "8.5.1",
+    "typescript": "5.9.3",
+    "vitest": "5.0.3"
+  }
+}
