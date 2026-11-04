@@ -10,8 +10,29 @@ A MongoDB-style document database, built from scratch in Go to learn how databas
 | 1 | Key-value store on an append-only log | ✅ |
 | 2 | B+tree storage engine | ✅ |
 | 3 | Documents and collections | ✅ |
-| 4 | Query engine | next |
-| 5–8 | Indexes, transactions, server, client | planned |
+| 4 | Query engine | ✅ |
+| 5 | Indexes and a query planner | next |
+| 6–8 | Transactions, server, client | planned |
+
+## Phase 4: a MongoDB-style query engine
+
+`internal/query` runs filters, sort, skip, limit and projection over a collection:
+
+```sh
+./burrowdb doc shop.db query users '{"filter":{"age":{"$gt":30},"tags":"admin"},"sort":{"age":-1},"limit":10,"projection":{"name":1}}'
+./burrowdb doc shop.db count users '{"address.city":"Lahore"}'
+```
+
+- **Operators:** `$eq $ne $gt $gte $lt $lte $in $nin $exists`, combined with `$and $or $nor`, plus plain `{"field": value}` equality.
+- **MongoDB's matching rules:** dotted paths into nested objects and through arrays (`items.price`, `items.0.price`); an array matches if any element does, or as a whole; `1` equals `1.0`; range operators only compare within one type; `{"x": null}` also matches documents without `x`.
+- **Sort** on several fields in the order given (kept from the JSON), with MongoDB's type order (null < numbers < strings < objects < arrays < booleans). Arrays sort by their smallest element ascending and largest descending, and ties keep `_id` order.
+- **Projection** includes (`{"name":1}`) or excludes (`{"password":0}`) fields, dotted paths too.
+
+**Tested with:** 61 hand-checked filters and 5 sort orders over a dataset built around the tricky cases, plus property checks over thousands of random documents and filters (`$ne` is the opposite of `$eq`, `$in` is an OR of equalities, `$or`/`$and`/`$nor` follow boolean logic, results are really sorted, skip/limit is a slice of the full result). Six planted semantics bugs are all caught; one of them exposed a missing test for sort stability, which was added.
+
+**Not yet supported:** `$elemMatch`, `$not`, `$regex`, `$size`, `$type`, and updates with operators like `$set`.
+
+Every query scans the whole collection for now. On 1 million documents that takes 0.6–0.7 s, whether 1 document matches or 11,000. That's what phase 5's indexes are for.
 
 ## Phase 3: documents and collections
 

@@ -11,9 +11,10 @@ import (
 	"github.com/Aliraza777/burrowdb/internal/doc"
 	"github.com/Aliraza777/burrowdb/internal/kv"
 	"github.com/Aliraza777/burrowdb/internal/pager"
+	"github.com/Aliraza777/burrowdb/internal/query"
 )
 
-const version = "0.0.3"
+const version = "0.0.4"
 
 const usage = `burrowdb: a document database built from scratch
 
@@ -26,7 +27,8 @@ usage:
   burrowdb doc <file> replace <collection> <_id> '<json>'
   burrowdb doc <file> delete <collection> <_id>
   burrowdb doc <file> find <collection> [limit]      every document, in _id order
-  burrowdb doc <file> count <collection>
+  burrowdb doc <file> query <collection> '<query>'    e.g. '{"filter":{"age":{"$gt":30}},"sort":{"age":-1},"limit":10}'
+  burrowdb doc <file> count <collection> ['<filter>']
   burrowdb doc <file> collections
   burrowdb doc <file> drop <collection>
 
@@ -210,7 +212,8 @@ func runDoc(args []string) error {
 	op, rest := args[1], args[2:]
 	need := map[string][2]int{ // min, max arguments
 		"insert": {2, 2}, "get": {2, 2}, "replace": {3, 3}, "delete": {2, 2},
-		"find": {1, 2}, "count": {1, 1}, "collections": {0, 0}, "drop": {1, 1},
+		"find": {1, 2}, "count": {1, 2}, "collections": {0, 0}, "drop": {1, 1},
+		"query": {2, 2},
 	}
 	n, ok := need[op]
 	if !ok {
@@ -277,7 +280,37 @@ func runDoc(args []string) error {
 			return err
 		}
 		return printErr
+	case "query":
+		q, err := query.ParseQueryJSON([]byte(rest[1]))
+		if err != nil {
+			return err
+		}
+		docs, err := query.Find(db, rest[0], q)
+		if err != nil {
+			return err
+		}
+		for _, d := range docs {
+			if err := printDoc(d); err != nil {
+				return err
+			}
+		}
 	case "count":
+		if len(rest) == 2 {
+			m, err := doc.FromJSON([]byte(rest[1]))
+			if err != nil {
+				return err
+			}
+			f, err := query.ParseFilter(m)
+			if err != nil {
+				return err
+			}
+			c, err := query.Count(db, rest[0], f)
+			if err != nil {
+				return err
+			}
+			fmt.Println(c)
+			return nil
+		}
 		c, err := db.Count(rest[0])
 		if err != nil {
 			return err
