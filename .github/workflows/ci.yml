@@ -30,6 +30,8 @@ jobs:
       - name: fuzz the index key encoding (30s)
         run: go test -run '^$' -fuzz FuzzKeyOrder -fuzztime 30s ./internal/value
       - run: go build ./cmd/burrowdb
+      - name: vet the benchmark module
+        run: cd bench && go vet .
 
   ts-client:
     name: TypeScript client (against a real server)
