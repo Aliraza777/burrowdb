@@ -12,8 +12,42 @@ A MongoDB-style document database, built from scratch in Go to learn how databas
 | 3 | Documents and collections | ✅ |
 | 4 | Query engine | ✅ |
 | 5 | Indexes and a query planner | ✅ |
-| 6 | Transactions and a write-ahead log | next |
-| 7–8 | Server, client, launch | planned |
+| 6 | Transactions and group commit | ✅ |
+| 7 | HTTP server and TypeScript client | next |
+| 8 | Benchmarks and launch | planned |
+
+## Phase 6: transactions and group commit
+
+```go
+err := db.Transaction(func(tx *doc.Tx) error {
+    from, _ := tx.Get("bank", "alice")
+    to, _ := tx.Get("bank", "bob")
+    from["balance"] = from["balance"].(int64) - 50
+    to["balance"] = to["balance"].(int64) + 50
+    if err := tx.Replace("bank", "alice", from); err != nil {
+        return err
+    }
+    return tx.Replace("bank", "bob", to)
+})
+```
+
+A transaction can insert, replace, delete, read and query (`query.FindIn(tx.Reader(), ...)`) across collections, and sees its own uncommitted writes, indexes included. It commits all of it or none: if the function returns an error or panics, or **any write inside it failed** (even if the error was ignored), nothing is kept.
+
+**Why not a write-ahead log?** The plan called for one, but the storage is copy-on-write: a commit writes new pages and then switches one checksummed meta page, so commits are already atomic and crash-safe without a log. LMDB and BoltDB use the same design and have no WAL. The real cost was elsewhere: every commit waits for two disk flushes (~9 ms), so concurrent writers queued behind each other.
+
+**Group commit** fixes that. One committer goroutine takes every transaction waiting while the previous commit was flushing, runs them one after another against the same in-memory tree, and commits them all with one pair of flushes. `Update` still returns only once the data is on disk. If one transaction in a batch fails, only it is undone: every page allocation and free is journaled, and a failed transaction's journal entries are reversed exactly, newest first.
+
+| Writers | Throughput | Disk commits |
+| --- | --- | --- |
+| 1 (one commit per transaction) | ~113 transactions/s | 1 per transaction |
+| 32 concurrent | **~1,730 transactions/s** (~15×) | 49 for 800 transactions |
+
+**Tested with:**
+- batches mixing successful, failing and panicking transactions (only the successful ones' data survives, and the page check finds nothing leaked by the rollbacks);
+- 300 random batches with random failures against a model, including failed transactions that free pages allocated earlier in the same batch;
+- concurrent bank transfers (16 writers moving money between accounts while 4 readers sum all balances), where every reader must always see exactly the starting total.
+
+Planted bugs in each of the four undo cases, a kept root, an ignored abort, and a `Tx` usable after its transaction are all caught. One of them (keeping a freed page freed) put a cycle into the tree and crashed the delete code. Detecting corrupted trees cleanly instead is a hardening item for later.
 
 ## Phase 5: indexes and a query planner
 

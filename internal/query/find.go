@@ -74,23 +74,30 @@ func sortDocs(docs []map[string]any, fields []SortField) {
 
 // Find runs a query. It uses an index when one helps (see Explain).
 func Find(db *doc.DB, coll string, q Query) ([]map[string]any, error) {
-	out, _, err := run(db, coll, q)
+	out, _, err := run(db.Read, coll, q)
+	return out, err
+}
+
+// FindIn runs a query against a Reader, such as tx.Reader() inside a
+// transaction, so it sees that transaction's uncommitted writes.
+func FindIn(r *doc.Reader, coll string, q Query) ([]map[string]any, error) {
+	out, _, err := run(func(fn func(*doc.Reader) error) error { return fn(r) }, coll, q)
 	return out, err
 }
 
 // ExplainQuery runs a query and reports the plan it used and the work done.
 func ExplainQuery(db *doc.DB, coll string, q Query) (Explain, error) {
-	_, ex, err := run(db, coll, q)
+	_, ex, err := run(db.Read, coll, q)
 	return ex, err
 }
 
 // Count returns how many documents in a collection match the filter.
 func Count(db *doc.DB, coll string, f *Filter) (int, error) {
-	out, _, err := run(db, coll, Query{Filter: f})
+	out, _, err := run(db.Read, coll, Query{Filter: f})
 	return len(out), err
 }
 
-func run(db *doc.DB, coll string, q Query) ([]map[string]any, Explain, error) {
+func run(read func(func(*doc.Reader) error) error, coll string, q Query) ([]map[string]any, Explain, error) {
 	var ex Explain
 	if q.Skip < 0 || q.Limit < 0 {
 		return nil, ex, errors.New("query: skip and limit can't be negative")
@@ -102,7 +109,7 @@ func run(db *doc.DB, coll string, q Query) ([]map[string]any, Explain, error) {
 		stopAt = q.Skip + q.Limit
 	}
 	var out []map[string]any
-	err := db.Read(func(r *doc.Reader) error {
+	err := read(func(r *doc.Reader) error {
 		plan, err := choose(r, coll, q.Filter, q.Hint, &ex)
 		if err != nil {
 			return err

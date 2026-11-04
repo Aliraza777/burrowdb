@@ -79,6 +79,7 @@ func TestPersistsAcrossReopen(t *testing.T) {
 
 	db = openDB(t, path)
 	verify(t, db, want)
+	before.Transactions = 0 // counts only since Open
 	if after := db.Stats(); after != before {
 		t.Fatalf("stats changed across reopen: %+v -> %+v", before, after)
 	}

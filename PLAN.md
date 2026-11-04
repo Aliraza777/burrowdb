@@ -78,10 +78,10 @@ Each phase ends with something you can demo and post about. Times assume part-ti
 - **Learn:** why indexes speed up reads and slow down writes.
 - **Done when:** benchmarks show the index turning a query from O(n) into O(log n), and `explain` proves which plan ran.
 
-### Phase 6: Transactions and a write-ahead log (2 weeks)
-- A WAL plus checkpoints, so multi-document writes are all-or-nothing.
-- One writer and many readers (readers see a consistent snapshot via copy-on-write).
-- **Done when:** a crash at any point during a multi-document update leaves either all of it or none of it.
+### Phase 6: Transactions and group commit (done)
+- Decided against a write-ahead log: the copy-on-write pager already makes commits atomic and crash-safe (as in LMDB and BoltDB). The real bottleneck was one ~9 ms flush pair per commit.
+- Group commit: one committer goroutine commits every waiting transaction with one flush, with an undo journal so one failed transaction in a batch rolls back alone.
+- `db.Transaction(func(tx) error)`: multi-document, multi-collection, read-your-writes, all-or-nothing, aborted by any failed write.
 
 ### Phase 7: Server, shell and TypeScript client (2 weeks)
 - HTTP/JSON server (`burrowdb serve`), an interactive shell (`burrowdb shell`), and graceful shutdown.

@@ -100,13 +100,24 @@ type DB struct {
 	// hookBeforeMeta lets tests simulate a crash after the data pages are
 	// written but before the meta page.
 	hookBeforeMeta func() error
+
+	// Group commit: Update hands its function to one committer goroutine,
+	// which runs every waiting transaction and commits them with one sync.
+	reqs      chan *request
+	stop      chan struct{}
+	stopOnce  sync.Once
+	committer sync.WaitGroup
+	txCount   uint64 // transactions committed since Open
 }
 
 // Stats describe the file.
 type Stats struct {
-	TxID      uint64
+	TxID      uint64 // disk commits, including those before Open
 	Pages     uint64
 	FreePages int
+	// Transactions committed since Open. With concurrent writers this
+	// exceeds the disk commits made in that time: they shared commits.
+	Transactions uint64
 }
 
 // Open opens or creates a database file.
@@ -119,11 +130,13 @@ func Open(path string) (*DB, error) {
 }
 
 func openFile(f file) (*DB, error) {
-	db := &DB{f: f}
+	db := &DB{f: f, reqs: make(chan *request), stop: make(chan struct{})}
 	if err := db.load(); err != nil {
 		f.Close()
 		return nil, err
 	}
+	db.committer.Add(1)
+	go db.commitLoop()
 	return db, nil
 }
 
@@ -231,13 +244,56 @@ func (db *DB) View(fn func(t *btree.Tree) error) (err error) {
 	return fn(&btree.Tree{Root: db.meta.root, Pages: readPages{db}})
 }
 
-// tx collects one write transaction's page changes in memory.
+// tx collects the page changes of a batch of write transactions in memory.
+// Every allocation and free is journaled, so one transaction in the batch can
+// be rolled back without touching the others.
 type tx struct {
 	db        *DB
 	pending   map[uint64][]byte
 	free      []uint64 // reusable now
 	freed     []uint64 // committed pages released by this tx; reusable after commit
 	pageCount uint64
+	journal   []undo
+}
+
+type undoKind byte
+
+const (
+	undoNewFromFree  undoKind = iota + 1 // New took a page off the free list
+	undoNewAtEnd                         // New grew the file
+	undoDelPending                       // Del freed a page allocated in this batch
+	undoDelCommitted                     // Del released a page of the committed tree
+)
+
+type undo struct {
+	kind undoKind
+	ptr  uint64
+	page []byte // for undoDelPending
+}
+
+// mark returns a savepoint for rollback.
+func (t *tx) mark() int { return len(t.journal) }
+
+// rollback undoes every New and Del since the savepoint, newest first, so the
+// free lists and page count return exactly to their state at the savepoint.
+func (t *tx) rollback(mark int) {
+	for i := len(t.journal) - 1; i >= mark; i-- {
+		u := t.journal[i]
+		switch u.kind {
+		case undoNewFromFree:
+			delete(t.pending, u.ptr)
+			t.free = append(t.free, u.ptr)
+		case undoNewAtEnd:
+			delete(t.pending, u.ptr)
+			t.pageCount--
+		case undoDelPending:
+			t.free = t.free[:len(t.free)-1]
+			t.pending[u.ptr] = u.page
+		case undoDelCommitted:
+			t.freed = t.freed[:len(t.freed)-1]
+		}
+	}
+	t.journal = t.journal[:mark]
 }
 
 func (t *tx) Get(ptr uint64) []byte {
@@ -251,43 +307,48 @@ func (t *tx) New(page []byte) uint64 {
 	var ptr uint64
 	if n := len(t.free); n > 0 {
 		ptr, t.free = t.free[n-1], t.free[:n-1]
+		t.journal = append(t.journal, undo{kind: undoNewFromFree, ptr: ptr})
 	} else {
 		ptr = t.pageCount
 		t.pageCount++
+		t.journal = append(t.journal, undo{kind: undoNewAtEnd, ptr: ptr})
 	}
 	t.pending[ptr] = page
 	return ptr
 }
 
 func (t *tx) Del(ptr uint64) {
-	if _, ok := t.pending[ptr]; ok {
+	if page, ok := t.pending[ptr]; ok {
 		// Never committed, so nothing on disk refers to it.
 		delete(t.pending, ptr)
 		t.free = append(t.free, ptr)
+		t.journal = append(t.journal, undo{kind: undoDelPending, ptr: ptr, page: page})
 		return
 	}
 	// Still part of the last committed tree until this tx commits.
 	t.freed = append(t.freed, ptr)
+	t.journal = append(t.journal, undo{kind: undoDelCommitted, ptr: ptr})
 }
 
-// Update runs fn in a write transaction and commits if fn returns nil. If fn
-// returns an error or panics, nothing is written.
-func (db *DB) Update(fn func(t *btree.Tree) error) (err error) {
-	db.mu.Lock()
-	defer db.mu.Unlock()
-	if db.f == nil {
+// Update runs fn in a write transaction and commits if fn returns nil; it
+// returns once the commit is on disk. If fn returns an error or panics,
+// nothing it did is kept (a panic is re-raised in the caller).
+//
+// Transactions arriving while a commit is in progress are committed together
+// with a single sync. Each still sees the effects of the ones before it in
+// the batch and succeeds or fails on its own.
+func (db *DB) Update(fn func(t *btree.Tree) error) error {
+	req := &request{fn: fn, done: make(chan result, 1)}
+	select {
+	case db.reqs <- req:
+	case <-db.stop:
 		return ErrClosed
 	}
-	defer catch(&err)
-	t := &tx{db: db, pending: map[uint64][]byte{}, free: slices.Clone(db.free), pageCount: db.meta.pageCount}
-	tree := &btree.Tree{Root: db.meta.root, Pages: t}
-	if err := fn(tree); err != nil {
-		return err
+	r := <-req.done
+	if r.panicked {
+		panic(r.panicValue)
 	}
-	if tree.Root == db.meta.root && len(t.pending) == 0 && len(t.freed) == 0 {
-		return nil
-	}
-	return db.commit(t, tree.Root)
+	return r.err
 }
 
 func (db *DB) commit(t *tx, root uint64) error {
@@ -397,7 +458,7 @@ func (db *DB) Delete(key []byte) (existed bool, err error) {
 func (db *DB) Stats() Stats {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
-	return Stats{TxID: db.meta.txid, Pages: db.meta.pageCount, FreePages: len(db.free)}
+	return Stats{TxID: db.meta.txid, Pages: db.meta.pageCount, FreePages: len(db.free), Transactions: db.txCount}
 }
 
 // Check verifies the tree's structure and that every page is accounted for
@@ -448,6 +509,8 @@ func (db *DB) Check() error {
 
 // Close closes the file.
 func (db *DB) Close() error {
+	db.stopOnce.Do(func() { close(db.stop) })
+	db.committer.Wait() // finishes the batch in progress
 	db.mu.Lock()
 	defer db.mu.Unlock()
 	if db.f == nil {

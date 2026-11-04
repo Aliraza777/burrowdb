@@ -187,3 +187,35 @@ func TestExplain(t *testing.T) {
 	}
 	_ = fmt.Sprint
 }
+
+// Inside a transaction, queries see its uncommitted writes, through indexes
+// too; after a rollback, nothing of it is visible.
+func TestQueryInsideTransaction(t *testing.T) {
+	db, err := doc.Open(filepath.Join(t.TempDir(), "tx.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.CreateIndex("c", "n")
+	db.InsertMany("c", []map[string]any{{"_id": "a", "n": int64(1)}, {"_id": "b", "n": int64(2)}})
+	q, _ := ParseQueryJSON([]byte(`{"filter":{"n":{"$gte":2}},"hint":"n"}`))
+	rollback := fmt.Errorf("roll back")
+	err = db.Transaction(func(tx *doc.Tx) error {
+		tx.Insert("c", map[string]any{"_id": "c", "n": int64(3)})
+		tx.Replace("c", "a", map[string]any{"n": int64(5)})
+		got, err := FindIn(tx.Reader(), "c", q)
+		if err != nil {
+			return err
+		}
+		if ids(got) != "a,b,c" {
+			t.Errorf("inside the transaction got %s, want a,b,c", ids(got))
+		}
+		return rollback
+	})
+	if err != rollback {
+		t.Fatalf("Transaction returned %v", err)
+	}
+	if got, _ := Find(db, "c", q); ids(got) != "b" {
+		t.Fatalf("after rollback got %s, want b", ids(got))
+	}
+}

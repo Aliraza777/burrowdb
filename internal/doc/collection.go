@@ -204,35 +204,14 @@ func (db *DB) Insert(coll string, d map[string]any) (string, error) {
 
 // InsertMany adds documents in one transaction: all of them, or none.
 func (db *DB) InsertMany(coll string, docs []map[string]any) ([]string, error) {
-	ids := make([]string, len(docs))
-	full := make([]map[string]any, len(docs))
-	encs := make([][]byte, len(docs))
-	for i, d := range docs {
+	var ids []string
+	err := db.Transaction(func(tx *Tx) error {
 		var err error
-		if ids[i], full[i], encs[i], err = db.prepare(coll, d); err != nil {
-			return nil, fmt.Errorf("document %d: %w", i, err)
-		}
-	}
-	err := db.p.Update(func(t *btree.Tree) error {
-		indexes, err := readIndexes(t, coll)
-		if err != nil {
-			return err
-		}
-		for i, id := range ids {
-			if _, _, exists := readDoc(t, coll, id); exists {
-				return fmt.Errorf("document %d (_id %q): %w", i, id, ErrDuplicateID)
-			}
-			if err := writeDoc(t, coll, id, encs[i], 0); err != nil {
-				return err
-			}
-			if err := indexDoc(t, coll, id, full[i], indexes, false); err != nil {
-				return err
-			}
-		}
-		return addCount(t, coll, int64(len(ids)))
+		ids, err = tx.InsertMany(coll, docs)
+		return err
 	})
 	if err != nil {
-		return nil, err
+		return nil, unwrapAbort(err)
 	}
 	return ids, nil
 }
@@ -250,73 +229,27 @@ func (db *DB) Get(coll, id string) (map[string]any, error) {
 
 // Replace overwrites an existing document. If d has an _id it must match id.
 func (db *DB) Replace(coll, id string, d map[string]any) error {
-	if other, ok := d["_id"]; ok && other != id {
-		return ErrIDMismatch
-	}
-	withID := make(map[string]any, len(d)+1)
-	for k, v := range d {
-		withID[k] = v
-	}
-	withID["_id"] = id
-	_, full, enc, err := db.prepare(coll, withID)
-	if err != nil {
-		return err
-	}
-	return db.p.Update(func(t *btree.Tree) error {
-		oldEnc, chunks, found := readDoc(t, coll, id)
-		if !found {
-			return ErrNotFound
-		}
-		indexes, err := readIndexes(t, coll)
-		if err != nil {
-			return err
-		}
-		if len(indexes) > 0 {
-			old, err := Decode(oldEnc)
-			if err != nil {
-				return err
-			}
-			if err := indexDoc(t, coll, id, old, indexes, true); err != nil {
-				return err
-			}
-		}
-		if err := writeDoc(t, coll, id, enc, chunks); err != nil {
-			return err
-		}
-		return indexDoc(t, coll, id, full, indexes, false)
-	})
+	return unwrapAbort(db.Transaction(func(tx *Tx) error { return tx.Replace(coll, id, d) }))
 }
 
 // Delete removes a document and reports whether it existed.
 func (db *DB) Delete(coll, id string) (bool, error) {
-	if err := validCollection(coll); err != nil {
-		return false, err
-	}
 	var deleted bool
-	err := db.p.Update(func(t *btree.Tree) error {
-		oldEnc, _, found := readDoc(t, coll, id)
-		if !found {
-			return nil
-		}
-		indexes, err := readIndexes(t, coll)
-		if err != nil {
-			return err
-		}
-		if len(indexes) > 0 {
-			old, err := Decode(oldEnc)
-			if err != nil {
-				return err
-			}
-			if err := indexDoc(t, coll, id, old, indexes, true); err != nil {
-				return err
-			}
-		}
-		if deleted, err = deleteDoc(t, coll, id); err != nil {
-			return err
-		}
-		return addCount(t, coll, -1)
+	err := db.Transaction(func(tx *Tx) error {
+		var err error
+		deleted, err = tx.Delete(coll, id)
+		return err
 	})
-	return deleted, err
+	return deleted, unwrapAbort(err)
+}
+
+// unwrapAbort returns the original error for single-operation transactions,
+// where "transaction aborted" adds nothing.
+func unwrapAbort(err error) error {
+	if ae, ok := errors.AsType[*AbortError](err); ok {
+		return ae.Err
+	}
+	return err
 }
 
 // Scan calls fn for every document in _id order until fn returns false.
