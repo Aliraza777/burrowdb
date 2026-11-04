@@ -25,4 +25,6 @@ jobs:
         run: BURROWDB_CRASH_ITERS=200 go test -run TestCrashRecovery -count=1 ./internal/kv ./internal/pager
       - name: fuzz the B+tree (60s)
         run: go test -run '^$' -fuzz FuzzTree -fuzztime 60s ./internal/btree
+      - name: fuzz the document decoder (30s)
+        run: go test -run '^$' -fuzz FuzzDecode -fuzztime 30s ./internal/doc
       - run: go build ./cmd/burrowdb

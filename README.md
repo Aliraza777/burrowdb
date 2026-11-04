@@ -9,8 +9,34 @@ A MongoDB-style document database, built from scratch in Go to learn how databas
 | 0 | Project setup, CI | ✅ |
 | 1 | Key-value store on an append-only log | ✅ |
 | 2 | B+tree storage engine | ✅ |
-| 3 | Documents and collections | next |
-| 4–8 | Queries, indexes, transactions, server, client | planned |
+| 3 | Documents and collections | ✅ |
+| 4 | Query engine | next |
+| 5–8 | Indexes, transactions, server, client | planned |
+
+## Phase 3: documents and collections
+
+`internal/doc` stores JSON-like documents in named collections, all inside the one B+tree, separated by key prefix:
+
+```
+c/<collection>                           collection metadata (document count)
+d/<collection> \0 <_id> \0 <chunk>       document data
+```
+
+- **Binary encoding** with distinct types (null, bool, int64, float64, string, array, object), so `42` and `42.0` stay different, as in MongoDB. Each document has exactly one encoding: keys are sorted, and the decoder rejects anything non-canonical.
+- **Large documents** are split into chunks of up to 3,000 bytes (the B+tree's value limit), up to 16 MB per document.
+- **`_id`s** are MongoDB-style ObjectIDs (timestamp, random, counter), or your own string. Within one process, generated `_id`s sort in insertion order.
+- Inserting a batch, replacing a document, and updating the collection count are each one atomic transaction.
+
+```sh
+./burrowdb doc shop.db insert users '{"name":"Ann","age":31,"tags":["admin"]}'
+./burrowdb doc shop.db find users
+./burrowdb doc shop.db get users <_id>
+./burrowdb doc shop.db collections
+```
+
+**Tested with:** fuzzing the decoder (millions of inputs: corrupt bytes must never crash it, and anything accepted must re-encode identically; this caught non-minimal lengths being accepted), 3,000 random operations against an in-memory model with reopening, documents that grow and shrink across many chunks with no leaked pages, and atomic batch inserts.
+
+**1 million documents** (`BURROWDB_MILLION=1 go test -run TestMillionDocuments ./internal/doc`, Apple M1 Pro): inserted in 10.8 s (93k/s, batches of 5,000), all read back in 0.66 s (1.5M/s), full page check 0.1 s, file 232 MB.
 
 ## Phase 2: a copy-on-write B+tree on disk
 

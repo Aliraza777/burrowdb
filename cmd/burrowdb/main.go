@@ -8,16 +8,27 @@ import (
 	"os"
 
 	"github.com/Aliraza777/burrowdb/internal/btree"
+	"github.com/Aliraza777/burrowdb/internal/doc"
 	"github.com/Aliraza777/burrowdb/internal/kv"
 	"github.com/Aliraza777/burrowdb/internal/pager"
 )
 
-const version = "0.0.2"
+const version = "0.0.3"
 
 const usage = `burrowdb: a document database built from scratch
 
 usage:
   burrowdb version
+
+  Documents (phase 3):
+  burrowdb doc <file> insert <collection> '<json>'   prints the new _id
+  burrowdb doc <file> get <collection> <_id>
+  burrowdb doc <file> replace <collection> <_id> '<json>'
+  burrowdb doc <file> delete <collection> <_id>
+  burrowdb doc <file> find <collection> [limit]      every document, in _id order
+  burrowdb doc <file> count <collection>
+  burrowdb doc <file> collections
+  burrowdb doc <file> drop <collection>
 
   B+tree storage engine (phase 2):
   burrowdb db <file> set <key> <value>
@@ -51,6 +62,8 @@ func run(args []string) error {
 		return runKV(args[1:])
 	case "db":
 		return runDB(args[1:])
+	case "doc":
+		return runDoc(args[1:])
 	default:
 		fmt.Print(usage)
 		return fmt.Errorf("unknown command %q", args[0])
@@ -180,6 +193,110 @@ func runDB(args []string) error {
 		fmt.Println("ok: tree structure valid, every page accounted for")
 	default:
 		return fmt.Errorf("unknown db command %q", op)
+	}
+	return nil
+}
+
+func runDoc(args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("usage: burrowdb doc <file> <insert|get|replace|delete|find|count|collections|drop> ...")
+	}
+	db, err := doc.Open(args[0])
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	op, rest := args[1], args[2:]
+	need := map[string][2]int{ // min, max arguments
+		"insert": {2, 2}, "get": {2, 2}, "replace": {3, 3}, "delete": {2, 2},
+		"find": {1, 2}, "count": {1, 1}, "collections": {0, 0}, "drop": {1, 1},
+	}
+	n, ok := need[op]
+	if !ok {
+		return fmt.Errorf("unknown doc command %q", op)
+	}
+	if len(rest) < n[0] || len(rest) > n[1] {
+		return fmt.Errorf("wrong number of arguments for %s (see `burrowdb` for usage)", op)
+	}
+
+	printDoc := func(d map[string]any) error {
+		out, err := doc.ToJSON(d)
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(out))
+		return nil
+	}
+	switch op {
+	case "insert":
+		d, err := doc.FromJSON([]byte(rest[1]))
+		if err != nil {
+			return err
+		}
+		id, err := db.Insert(rest[0], d)
+		if err != nil {
+			return err
+		}
+		fmt.Println(id)
+	case "get":
+		d, err := db.Get(rest[0], rest[1])
+		if err != nil {
+			return err
+		}
+		return printDoc(d)
+	case "replace":
+		d, err := doc.FromJSON([]byte(rest[2]))
+		if err != nil {
+			return err
+		}
+		return db.Replace(rest[0], rest[1], d)
+	case "delete":
+		deleted, err := db.Delete(rest[0], rest[1])
+		if err == nil && !deleted {
+			return doc.ErrNotFound
+		}
+		return err
+	case "find":
+		limit := -1
+		if len(rest) == 2 {
+			if _, err := fmt.Sscan(rest[1], &limit); err != nil || limit < 0 {
+				return fmt.Errorf("limit must be a non-negative number")
+			}
+		}
+		var printErr error
+		err := db.Scan(rest[0], func(d map[string]any) bool {
+			if limit == 0 {
+				return false
+			}
+			limit--
+			printErr = printDoc(d)
+			return printErr == nil
+		})
+		if err != nil {
+			return err
+		}
+		return printErr
+	case "count":
+		c, err := db.Count(rest[0])
+		if err != nil {
+			return err
+		}
+		fmt.Println(c)
+	case "collections":
+		names, err := db.Collections()
+		if err != nil {
+			return err
+		}
+		for _, name := range names {
+			fmt.Println(name)
+		}
+	case "drop":
+		existed, err := db.DropCollection(rest[0])
+		if err == nil && !existed {
+			return fmt.Errorf("collection %q does not exist", rest[0])
+		}
+		return err
 	}
 	return nil
 }
