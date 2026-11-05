@@ -1,5 +1,5 @@
-// Command burrowdb is the command-line entry point. It exposes the storage
-// engines built so far; later phases add `serve` and `shell`.
+// Command burrowdb is the burrowdb command-line tool: document commands,
+// the HTTP server, and low-level access to the storage engines.
 package main
 
 import (
@@ -31,12 +31,12 @@ const usage = `burrowdb: a document database built from scratch
 usage:
   burrowdb version
 
-  HTTP server (phase 7):
+  HTTP server:
   burrowdb serve --data <file> [--addr 127.0.0.1:7070] [--token <secret>]
       The token can also come from $BURROWDB_TOKEN. Clients send it as
       "Authorization: Bearer <token>".
 
-  Documents (phase 3):
+  Documents:
   burrowdb doc <file> insert <collection> '<json>'   prints the new _id
   burrowdb doc <file> get <collection> <_id>
   burrowdb doc <file> replace <collection> <_id> '<json>'
@@ -53,7 +53,7 @@ usage:
   burrowdb doc <file> check                          verify pages and every index
   burrowdb doc <file> drop <collection>
 
-  B+tree storage engine (phase 2):
+  B+tree storage engine (low level):
   burrowdb db <file> set <key> <value>
   burrowdb db <file> get <key>
   burrowdb db <file> del <key>
@@ -61,7 +61,7 @@ usage:
   burrowdb db <file> stats
   burrowdb db <file> check              verify the tree and page accounting
 
-  Append-only log store (phase 1):
+  Append-only log store (low level):
   burrowdb kv <file> set|get|del|keys|stats|compact ...
 `
 

@@ -1,5 +1,5 @@
-// Package kv is burrowdb's first storage engine: a key-value store on an
-// append-only log, in the style of Bitcask.
+// Package kv is a key-value store on an append-only log, in the style of
+// Bitcask. It is simpler than the B+tree engine and has no ordered scans.
 //
 // Every Set or Delete appends a checksummed record to one file. An in-memory
 // map from key to the value's file offset is rebuilt on Open by replaying the

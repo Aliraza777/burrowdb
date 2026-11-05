@@ -30,9 +30,9 @@ cd bench && go run . -n 100000
 
 ## Why each row comes out the way it does
 
-**Concurrent writers: burrowdb wins about 9×.** This is group commit (phase 6). One committer goroutine takes every transaction that arrived while the previous commit was flushing and commits them together, so 640 inserts need only a few dozen disk flushes. SQLite serializes writers, and each pays for its own flush.
+**Concurrent writers: burrowdb wins about 9×.** This is group commit. One committer goroutine takes every transaction that arrived while the previous commit was flushing and commits them together, so 640 inserts need only a few dozen disk flushes. SQLite serializes writers, and each pays for its own flush.
 
-**Single inserts: SQLite wins about 2×.** Each burrowdb commit flushes twice: first the new pages, then the meta page that points at them. Order matters, so the two can't merge. SQLite in WAL mode appends the change to its log and flushes once. This is the real argument for a write-ahead log, which burrowdb chose not to build in phase 6. Copy-on-write already made commits atomic, and group commit fixed throughput under concurrency, but a lone writer still pays for two flushes.
+**Single inserts: SQLite wins about 2×.** Each burrowdb commit flushes twice: first the new pages, then the meta page that points at them. Order matters, so the two can't merge. SQLite in WAL mode appends the change to its log and flushes once. This is the real argument for a write-ahead log, which burrowdb doesn't have. Copy-on-write already makes commits atomic, and group commit handles throughput under concurrency, but a lone writer still pays for two flushes.
 
 **Bulk inserts: SQLite wins about 2.4×.** burrowdb's B+tree is copy-on-write even within a transaction. Every key it sets copies the pages from leaf to root, and each document writes several keys: its data chunk, one entry per index, and the collection count. SQLite modifies pages in place inside a transaction and writes each dirty page once.
 

@@ -304,7 +304,7 @@ func BenchmarkInsertMany1000(b *testing.B) {
 	}
 }
 
-// TestMillionDocuments is the phase 3 milestone: store 1,000,000 documents,
+// TestMillionDocuments stores 1,000,000 documents,
 // read them all back, and pass the page check. Slow, so opt-in:
 // BURROWDB_MILLION=1 go test -run TestMillionDocuments -v ./internal/doc
 func TestMillionDocuments(t *testing.T) {

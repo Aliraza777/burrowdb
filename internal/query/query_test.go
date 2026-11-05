@@ -465,8 +465,8 @@ func TestSortIsStable(t *testing.T) {
 	}
 }
 
-// TestMillionScan times queries over 1,000,000 documents with a full scan,
-// the baseline phase 5's indexes should beat. Opt-in:
+// TestMillionScan times queries over 1,000,000 documents, once with a full
+// scan and once with indexes. Opt-in:
 // BURROWDB_MILLION=1 go test -run TestMillionScan -v ./internal/query
 func TestMillionScan(t *testing.T) {
 	if os.Getenv("BURROWDB_MILLION") == "" {
